@@ -374,9 +374,9 @@ tool silently missing after a restart). Those two need a DSH installation. Witho
 one they fail, unless `DSH_MEMORY_ALLOW_MISSING_HARNESS=1` is set, which records a
 skip and says so in the summary.
 
-CI sets that flag, because a clean runner cannot have the Harness: `@deepseek-ai/dsh`
-and even `@deepseek-ai/cordis` depend on packages that are not published
-(`@deepseek-ai/dsh-desktop-host` returns 404 from the registry). Everything else —
+CI sets that flag, because a clean runner cannot install the Harness: the
+`@deepseek-ai/dsh` package set resolves a dependency on `@deepseek-ai/dsh-desktop-host`,
+which is not published (404 from the registry). Everything else —
 retrieval, gating, provenance, redaction, cards, the incremental build, live indexing,
 consolidation, and a hermetic end-to-end run — runs there on Node 20 and 22.
 

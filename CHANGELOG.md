@@ -7,8 +7,8 @@
 **Added — CI，以及"做不到就明说"的两段严格测试**
 
 - `.github/workflows/test.yml`：Node 20/22 上跑完整链，`DSH_HOME` 指向临时目录。
-  干净 runner **装不上 Harness** —— `@deepseek-ai/dsh`、甚至 `@deepseek-ai/cordis`
-  都依赖未发布的内部包（`@deepseek-ai/dsh-desktop-host` 在 registry 上 404）。因此驱动
+  干净 runner **装不上 Harness** —— `@deepseek-ai/dsh` 的依赖闭包里解析到未发布的
+  `@deepseek-ai/dsh-desktop-host`（registry 上 404）。因此驱动
   真校验器/真 Cordis 的两段在那里记 **skip**（`DSH_MEMORY_ALLOW_MISSING_HARNESS=1`），
   而开发者机器没有 DSH 时**仍然是失败**；`npm run test:strict` 则把任何 skip 当失败。
 - 顺带修掉一个既有缺陷：loader-contract 测试拿 `findCordis()` 与 `null` 比较，而它返回

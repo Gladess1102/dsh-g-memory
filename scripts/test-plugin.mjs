@@ -242,14 +242,7 @@ async function main() {
     await check('declared schema stays inside the Harness subset', () => {
       if (harness === null) {
         // Without the real validator the mock already skipped enforcement; say so
-        // rather than reporting a pass that proves nothing. A CI runner is the one
-        // environment that cannot install the Harness at all (its packages depend on
-        // unpublished ones), so there — and only when explicitly allowed — this
-        // records a skip instead of a failure.
-        if (process.env.DSH_MEMORY_ALLOW_MISSING_HARNESS === '1') {
-          skip('declared schema stays inside the Harness subset', 'Harness validator unavailable (allowed by DSH_MEMORY_ALLOW_MISSING_HARNESS)');
-          return;
-        }
+        // rather than reporting a pass that proves nothing.
         throw new Error('Harness validator unavailable — cannot prove the schema is accepted');
       }
       harness.assertSupportedJsonSchema(tool.parameters);

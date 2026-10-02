@@ -75,16 +75,6 @@ console.log(!cordisPath
   : `  Cordis: ${cordisPath}`);
 console.log('─'.repeat(70));
 
-// A clean CI runner cannot install the Harness: `@deepseek-ai/dsh` and even
-// `@deepseek-ai/cordis` depend on packages that are not published (`dsh-desktop-host`
-// returns 404 from the registry). The stages that drive the real loader therefore
-// *skip* there — loudly, and only when told to — while a developer machine without a
-// DSH install still fails, which is the case this exit code exists for.
-const allowMissing = process.env.DSH_MEMORY_ALLOW_MISSING_HARNESS === '1';
-if (!cordisPath && allowMissing) {
-  console.log('  ⏭️  Cordis 不可用，且已允许缺失（CI）—— load-order 检查跳过');
-  process.exit(0);
-}
 if (!cordisPath) {
   console.log('');
   console.log('  The Loader contract cannot be verified without the deployment\'s');

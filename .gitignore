@@ -12,6 +12,9 @@ node_modules/
 *.tmp-*
 stats.jsonl
 
+# CI scratch install of the two Harness packages
+.harness/
+
 # Local evaluation output
 eval-*.json
 cases-*.local.json

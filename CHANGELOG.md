@@ -4,31 +4,27 @@
 
 一周真实使用后的验收快照。这一版的重点不是新算法，而是**让系统在没人管的情况下保持正确**。
 
-**Added — CI，以及"做不到就明说"的两段严格测试**
+**Added — CI（真跑严格测试，不跳过）**
 
 - `.github/workflows/test.yml`：Node 20/22 上跑完整链，`DSH_HOME` 指向临时目录。
-  干净 runner **装不上 Harness** —— `@deepseek-ai/dsh` 的依赖闭包里解析到未发布的
-  `@deepseek-ai/dsh-desktop-host`（registry 上 404）。因此驱动
-  真校验器/真 Cordis 的两段在那里记 **skip**（`DSH_MEMORY_ALLOW_MISSING_HARNESS=1`），
-  而开发者机器没有 DSH 时**仍然是失败**；`npm run test:strict` 则把任何 skip 当失败。
+  驱动真 Harness 的两段（JSON-schema 校验器、Cordis loader）**照常运行** —— CI 先把它们
+  真正加载的两个包装到 `.harness/`（`@deepseek-ai/dsh-tools` + `@deepseek-ai/cordis`，
+  约 11 秒），再用 `DSH_CHECKOUT` 指过去。完整 `@deepseek-ai/dsh` 应用包 506 MB，测试链
+  一行都不需要它。
 - 顺带修掉一个既有缺陷：loader-contract 测试拿 `findCordis()` 与 `null` 比较，而它返回
   `undefined` —— 那段"Cordis 未找到"的兜底**是死代码**，在没有 DSH 的机器上会直接崩在
   `pathToFileURL(undefined)`，而不是给出解释。
-- 测试链在**空 DSH_HOME + 无 Harness** 环境下实测退出码 0（5 项如实跳过），
-  本地有 Harness 时 34/34 + 5/5 全通过。
 
-**验收（2026-09-25 → 10-02，8 天）**
+**Fixed — 一个把我引到错路上的测量伪影**
 
-| 维度 | 实测 |
-|---|---|
-| 可用性 | 布防 241 · 门控 202 · 注入 88（37%）· 主动召回 34 次 · 主动写入 48 次 |
-| 保真度 | 错误事件 **0** · 重排退回自 09-26 起 **0**（此前 16 次）|
-| 资源 | 索引 18 MB 单副本（+1.9 MB/周）· 卡片 96 KB · 三个模型一周释放/冷启动 60–83 次（非常驻得证）|
-| 可靠性 | 索引无损坏 · 配置与软链挺过 DSH 0.1.7 → 0.2.0 升级 · 12 段测试链全绿 |
+接线 CI 时我一度断定"官方包装不上"，并据此写了"CI 只能跳过严格测试"的设计，还写进了
+README 与 CHANGELOG。**是错的**：`/tmp/package.json` 里有一个早先留下的 fixture，它的
+`name` 正是 `@deepseek-ai/dsh-desktop-runtime` 且依赖未发布的 `dsh-desktop-host`；npm 会
+**向上查找 package.json**，于是我在 `/tmp` 下的每次安装都被它劫持，404 的是我自己的文件，
+不是 registry。换到 `$HOME` 下：两个叶子包 11 秒装好，完整包 2 分钟装好（538 个包）。
 
-验收也暴露了唯一一个真问题：**索引只在手动构建时长，一周没人跑就静默陈旧**（19 个会话 / 17 MB 未入库，
-而所有健康信号都是绿的）。0.7.0 用实时索引解决它 —— 见下。
-
+教训（已固化为规则）：**在 `/tmp` 里跑 `npm install` 之前，先确认上层没有 package.json**；
+以及"装不上"这类结论必须换一个干净目录复现一次再写进文档。
 
 **Added — 索引自己跟着会话走（不再需要手动构建）**
 

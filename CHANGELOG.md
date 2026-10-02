@@ -1,5 +1,183 @@
 # Changelog
 
+## 0.7.0 — 2026-10-02
+
+一周真实使用后的验收快照。这一版的重点不是新算法，而是**让系统在没人管的情况下保持正确**。
+
+**Added — CI，以及"做不到就明说"的两段严格测试**
+
+- `.github/workflows/test.yml`：Node 20/22 上跑完整链，`DSH_HOME` 指向临时目录。
+  干净 runner **装不上 Harness** —— `@deepseek-ai/dsh`、甚至 `@deepseek-ai/cordis`
+  都依赖未发布的内部包（`@deepseek-ai/dsh-desktop-host` 在 registry 上 404）。因此驱动
+  真校验器/真 Cordis 的两段在那里记 **skip**（`DSH_MEMORY_ALLOW_MISSING_HARNESS=1`），
+  而开发者机器没有 DSH 时**仍然是失败**；`npm run test:strict` 则把任何 skip 当失败。
+- 顺带修掉一个既有缺陷：loader-contract 测试拿 `findCordis()` 与 `null` 比较，而它返回
+  `undefined` —— 那段"Cordis 未找到"的兜底**是死代码**，在没有 DSH 的机器上会直接崩在
+  `pathToFileURL(undefined)`，而不是给出解释。
+- 测试链在**空 DSH_HOME + 无 Harness** 环境下实测退出码 0（5 项如实跳过），
+  本地有 Harness 时 34/34 + 5/5 全通过。
+
+**验收（2026-09-25 → 10-02，8 天）**
+
+| 维度 | 实测 |
+|---|---|
+| 可用性 | 布防 241 · 门控 202 · 注入 88（37%）· 主动召回 34 次 · 主动写入 48 次 |
+| 保真度 | 错误事件 **0** · 重排退回自 09-26 起 **0**（此前 16 次）|
+| 资源 | 索引 18 MB 单副本（+1.9 MB/周）· 卡片 96 KB · 三个模型一周释放/冷启动 60–83 次（非常驻得证）|
+| 可靠性 | 索引无损坏 · 配置与软链挺过 DSH 0.1.7 → 0.2.0 升级 · 12 段测试链全绿 |
+
+验收也暴露了唯一一个真问题：**索引只在手动构建时长，一周没人跑就静默陈旧**（19 个会话 / 17 MB 未入库，
+而所有健康信号都是绿的）。0.7.0 用实时索引解决它 —— 见下。
+
+
+**Added — 索引自己跟着会话走（不再需要手动构建）**
+
+一周验收发现：索引只在手动跑 `build` 时长，实测**一周没人跑 → 19 个会话 / 17 MB 内容不在索引里**，
+而所有健康信号都是绿的（转录层会静默陈旧）。
+
+设计与依据（读源码而非猜测）：
+
+| 参考 | 做法 |
+|---|---|
+| **VCP 上游** `KnowledgeBaseManager.js` | `chokidar` 监听 + **1 秒批处理窗口** + **每路径 generation 去重** + 延迟落盘 + **启动后追赶刷新**；只有引擎签名变化才全量重建（没有任何定时全量） |
+| DSH 生态 `dsh-mnemon`/`dsh-mnemosyne`/`@openviking/dsh-memory-plugin`/`dsh-experience-memory` | `session/event` 捕获 + `agent/turn-stopping`/`session/disposed` 收尾 + `agent/pre-step` 召回，重活防抖 |
+
+dsh-g-memory 采用同样的形状，但落在自己的架构上：
+
+- **触发**：`session/event` 收到 `turn/end` 时只置一个布尔（热路径零 I/O）；`session/disposed` 同样；
+  30 秒防抖 tick 干活；启动后 15 秒追赶一次
+- **工作量**（关键）：只读**日志 mtime 变过**的会话，且只取**水位之后**的事件（`seq` 单调，水位精确）；
+  首次运行从索引自身的 `builtAt` + 每会话已入库的最大 seq**播种**水位，不重扫已覆盖的内容
+- **写盘**：仍是单文件索引，压缩级别 `-19 → -9`（实测同体积，**12.5 秒 → 0.45 秒**）
+- **安全**：与手动构建**共用锁文件**；模型不匹配时暂停而不是混向量空间；嵌入失败不写半截索引、
+  水位也不前进；每轮有单元数与时间预算；任何异常都不进回合
+
+**实测（真实生产索引）**：播种 102 个会话 → 首次只读 2 个变化会话、+66 单元、6.5 秒；
+**无变化时 233 毫秒**（全量重建 33 秒，便宜 **140 倍**）。新增 `scripts/test-live-index.mjs`（12 项）。
+
+配置：`liveIndex.{enabled, debounceMs, quietMs, maxUnitsPerTick, budgetMs}`，
+环境变量 `DSH_G_MEMORY_LIVE*`。手动 `build` 仍然保留（全量/换模型/压缩整理）。
+
+**Fixed — 自检发现的两处（第五轮）**
+
+- **工具的来源标签在边界上丢失。** `memory_recall` 的渲染层从工具自己的输出重建条目，
+  而输出 schema 里没有 `source` / `orphaned`（`additionalProperties: false`，没声明就
+  到不了）——于是**用户手写的卡片被呈现给模型时标成 "transcript excerpt"，即"逐字、可
+  对照原文核查"**，而这标签本身就是为防这种过度声称而存在的。声明并全程传递这两个字段，
+  新增 4 条断言（含卡片必须显示 written memory、源已删除必须显示 unverifiable）。
+- **重排器 55.7% 的回合没跑起来。** 分小时看：09-24 11:00 之前全是 `false`（那正是自动
+  路径从未调用重排器的旗舰缺陷期），修好后基本全 `true`，但仍每小时有约 2 次退回。
+  实测：20 个候选不截断时一次重排要 **4.1 秒**，多个会话并发排队就会超过 30 秒超时，
+  于是静默退回 RRF 排序。**截断到 300 字符后：top-1 反而更好（50/60 vs 49/60）、延迟
+  1.5 秒（2.7×）**。新增 `rerank.maxChars`（默认 300，0 = 不截断），只截断送给交叉编码器
+  的副本，注入的仍是完整条目。
+
+**Changed — 按需端侧模型、单份索引、按需合成（四条要求对齐）**
+
+四项改动，都是先测量再改：
+
+- **合成只在"答案需要拼装"时才跑。** 134 条带标签用例实测：标签出现在注入内容里
+  111 条，其中 **103 条（92.8%）在 top-1 单条里就已存在** —— 对这些做转述只能丢细节
+  （而且实测 2B 模型会加入无依据的推测）。前二分差把两组分得很开（单条已够 p50 1.26，
+  需拼装 p50 0.30），阈值 0.2 是实测最优（82% 正确）。规则刻意偏向"少合成"：多合成
+  一次是把逐字文本换成转述，少合成一次仍然把全部条目交给调用方自己拼。
+  `policy.synthesisMargin`（`DSH_G_MEMORY_SYNTHESIS_MARGIN`），0 = 从不合成。
+- **索引只留一份。** 原来明文（30.7 MB）与压缩（15.8 MB）两份都写，而实测读压缩副本
+  **并不更慢**（0.20 s vs 0.25 s，16,769 单元）。现在压缩是主副本，明文只在没有 zstd
+  可用时写（`plain: true` 可强制）。生产索引目录 **47 MB → 16 MB**。
+- **引擎按需**（原本已实现，本轮核实并修正文档口径）：嵌入/重排/合成三个模型都由
+  `title-server-on-demand.py` 托管，空闲 `MLX_ENGINE_IDLE_SECONDS`（默认 300 秒）释放，
+  实测冷启动 0.8 s / 1.3 s / 5.6 s。守护日志里写死 "mlx_lm.server" 的措辞改为中性。
+- **脱敏与遥测不再依赖启动方式**：`zstd` 在 PATH 缺失时回退到常见绝对路径；决策日志
+  默认落盘（原先只有 web 启动器导出环境变量，桌面 App 因此完全没有遥测 —— 一个在
+  正常工作却看起来像死掉的插件）。配套：`~/bin/dsh-desktop-quick.sh` 用 `open --env`
+  传递环境（`open -a` 不传递），并新增 LaunchAgent 让"点图标启动"等价于终端启动。
+
+**实测的架构口径（供后续判断，避免重复劳动）**：索引文本 11.3 MB + 向量 12.4 MB，
+无重复单元（完全重复 0，近似重复 2.1%）；增量构建复用 91.6%；卡片 40 KB、遥测 56 KB。
+
+**Fixed — third review round: redaction gaps, evaluation credibility, and a vacuous test**
+
+Privacy, all three of the same shape (this document claimed coverage the code did
+not have):
+
+- **A private key longer than one chunk was never redacted.** The rule matches
+  `BEGIN…` against `END…` inside a single string, and the strings being redacted are
+  chunks: a measured 1,707-character RSA key split across 27 of them, and the
+  fragment holding the BEGIN line survived redaction intact. `chunkBySentence` now
+  keeps a PEM block whole — so the pair survives, the block is replaced by a
+  placeholder, and the index keeps its verbatim contract — with unterminated-marker
+  rules as a backstop for a key that was already split.
+- **Stripe keys were matched only in their documented form** (`sk-…`); every key
+  actually issued uses underscores (`sk_live_…`, `rk_live_…`).
+- **Narrowing the name rule in the previous round lost two families** — `token2=…`
+  and `secretValue=…` — while the security review kept describing the wide rule.
+
+Evaluation credibility:
+
+- `build-real-cases.mjs` builds a **synthesis** case set: it keeps only candidates
+  whose fragment already contained the answer (17 of 53 dropped) and asks the
+  question as a verbatim slice of that fragment. Any retrieval figure derived from
+  it is inflated by construction, and the file now says so at the top. (The
+  retrieval numbers quoted in this project's reports do not come from it.)
+- `eval-real.mjs` printed **"fabrication rate 0%"** when `EVAL_POSITIVE_ONLY=1`
+  skipped the negative loop entirely — a skipped measurement reported as a perfect
+  score. It now says the rate was not measured.
+- Four of the eight calibration cases had labels satisfied by hundreds of units
+  (`记忆插件` by 1,217 = 7.9%), and one asked about a model this project no longer
+  uses. Replaced with measured, rare labels. **That immediately surfaced a real
+  retrieval miss**: the new case "嵌入模型现在是多少维" finds nothing in the top 20
+  (calibration 8/8 → 7/8) — the old label had been passing by asking about a
+  retired fact.
+- `diagnose-surrogates.mjs` counted v3 and v4 of the same session separately, unlike
+  the builder; `eval-retrieval.mjs` still parsed five flags with `argv[++i]`;
+  `test-synthesis.mjs` returned `undefined` for a flag with no value;
+  `build-real-cases.mjs` hardcoded the reranker endpoint.
+
+**Fixed — a test that could not fail**
+
+`scripts/test-redaction.mjs` wrapped its checks in a *synchronous* helper, so the
+asynchronous private-key check returned a promise nobody awaited: the assertion
+failure became an unhandled rejection and the check printed ✅. It passed with the
+fix it was written for removed. Found by mutation testing — 22 mutations, each one
+breaking a specific fix and asserting that the suite notices; the first pass caught
+19, and the three misses led to this and to a fixture too small to trigger the
+head-margin rule.
+
+**Added — two tests that would have caught the above**
+
+- `scripts/test-modules-load.mjs` imports every `lib/` module and the plugin entry
+  point. `node --check` only parses: a reference to a name that was never imported
+  is a syntax-valid file that throws `ReferenceError` on load, which for
+  `lib/config.mjs` means the plugin does not start — and that is exactly how a
+  one-line edit during this review broke it.
+- `scripts/test-cli-args.mjs` pins the argument behaviour, including that an
+  argument error is reported without a stack trace.
+- `scripts/test-incremental-build.mjs` now plants a checkpoint from another model
+  and asserts both that it is refused and that a matching one is still resumed, so
+  the guard cannot silently disable resuming.
+
+**Changed — testing no longer depends on the production corpus**
+
+- `scripts/test-e2e-hermetic.mjs` is new: a stub embedding server, a stub
+  cross-encoder and a fixture index, so the automatic path (recall → rerank →
+  gate → injection) is checked end to end with no network, no model and no
+  session history. It is the check that would have caught the defect above,
+  because it configures the reranker the way a profile does — through options.
+  Wired into `npm test` and available as `npm run test:e2e`.
+- The two live `/recall` checks now skip, with a reason, when no reranker is
+  configured instead of passing or failing on corpus luck: without one the gate
+  reads the fused RRF floor, where the same code and the same query passed under
+  one embedding model and failed under the next.
+- `npm test` runs without `--strict` (environment-dependent checks report as
+  skips); `npm run test:strict` is the full run and expects a live reranker.
+- `scripts/telemetry-report.mjs` is new: trigger rate, which scale each gate read
+  (cross-encoder vs RRF fallback), verdicts, payload sizes and failed recalls.
+  The 27-hour silent degradation was visible in this data all along — nothing was
+  reading it.
+- `DEFAULT_EMBED_CONFIG` now names the deployed endpoint (11439 / `embed-gemma`),
+  so a fresh clone and the CLI point at a model that exists.
+
 ## 0.6.0 — 2026-09-24
 
 **Fixed — the 0.5.0 headline fix never reached the automatic path**
@@ -226,154 +404,6 @@
 - Removed a re-export of `appendFile` from `lib/cards.mjs` that nothing imported
   (every module imports it from `node:fs/promises`), and documented that the quality
   filter's branches are explanatory — only empty text and pure filler are dropped.
-
-**Added — 索引自己跟着会话走（不再需要手动构建）**
-
-一周验收发现：索引只在手动跑 `build` 时长，实测**一周没人跑 → 19 个会话 / 17 MB 内容不在索引里**，
-而所有健康信号都是绿的（转录层会静默陈旧）。
-
-设计与依据（读源码而非猜测）：
-
-| 参考 | 做法 |
-|---|---|
-| **VCP 上游** `KnowledgeBaseManager.js` | `chokidar` 监听 + **1 秒批处理窗口** + **每路径 generation 去重** + 延迟落盘 + **启动后追赶刷新**；只有引擎签名变化才全量重建（没有任何定时全量） |
-| DSH 生态 `dsh-mnemon`/`dsh-mnemosyne`/`@openviking/dsh-memory-plugin`/`dsh-experience-memory` | `session/event` 捕获 + `agent/turn-stopping`/`session/disposed` 收尾 + `agent/pre-step` 召回，重活防抖 |
-
-dsh-g-memory 采用同样的形状，但落在自己的架构上：
-
-- **触发**：`session/event` 收到 `turn/end` 时只置一个布尔（热路径零 I/O）；`session/disposed` 同样；
-  30 秒防抖 tick 干活；启动后 15 秒追赶一次
-- **工作量**（关键）：只读**日志 mtime 变过**的会话，且只取**水位之后**的事件（`seq` 单调，水位精确）；
-  首次运行从索引自身的 `builtAt` + 每会话已入库的最大 seq**播种**水位，不重扫已覆盖的内容
-- **写盘**：仍是单文件索引，压缩级别 `-19 → -9`（实测同体积，**12.5 秒 → 0.45 秒**）
-- **安全**：与手动构建**共用锁文件**；模型不匹配时暂停而不是混向量空间；嵌入失败不写半截索引、
-  水位也不前进；每轮有单元数与时间预算；任何异常都不进回合
-
-**实测（真实生产索引）**：播种 102 个会话 → 首次只读 2 个变化会话、+66 单元、6.5 秒；
-**无变化时 233 毫秒**（全量重建 33 秒，便宜 **140 倍**）。新增 `scripts/test-live-index.mjs`（12 项）。
-
-配置：`liveIndex.{enabled, debounceMs, quietMs, maxUnitsPerTick, budgetMs}`，
-环境变量 `DSH_G_MEMORY_LIVE*`。手动 `build` 仍然保留（全量/换模型/压缩整理）。
-
-**Fixed — 自检发现的两处（第五轮）**
-
-- **工具的来源标签在边界上丢失。** `memory_recall` 的渲染层从工具自己的输出重建条目，
-  而输出 schema 里没有 `source` / `orphaned`（`additionalProperties: false`，没声明就
-  到不了）——于是**用户手写的卡片被呈现给模型时标成 "transcript excerpt"，即"逐字、可
-  对照原文核查"**，而这标签本身就是为防这种过度声称而存在的。声明并全程传递这两个字段，
-  新增 4 条断言（含卡片必须显示 written memory、源已删除必须显示 unverifiable）。
-- **重排器 55.7% 的回合没跑起来。** 分小时看：09-24 11:00 之前全是 `false`（那正是自动
-  路径从未调用重排器的旗舰缺陷期），修好后基本全 `true`，但仍每小时有约 2 次退回。
-  实测：20 个候选不截断时一次重排要 **4.1 秒**，多个会话并发排队就会超过 30 秒超时，
-  于是静默退回 RRF 排序。**截断到 300 字符后：top-1 反而更好（50/60 vs 49/60）、延迟
-  1.5 秒（2.7×）**。新增 `rerank.maxChars`（默认 300，0 = 不截断），只截断送给交叉编码器
-  的副本，注入的仍是完整条目。
-
-**Changed — 按需端侧模型、单份索引、按需合成（四条要求对齐）**
-
-四项改动，都是先测量再改：
-
-- **合成只在"答案需要拼装"时才跑。** 134 条带标签用例实测：标签出现在注入内容里
-  111 条，其中 **103 条（92.8%）在 top-1 单条里就已存在** —— 对这些做转述只能丢细节
-  （而且实测 2B 模型会加入无依据的推测）。前二分差把两组分得很开（单条已够 p50 1.26，
-  需拼装 p50 0.30），阈值 0.2 是实测最优（82% 正确）。规则刻意偏向"少合成"：多合成
-  一次是把逐字文本换成转述，少合成一次仍然把全部条目交给调用方自己拼。
-  `policy.synthesisMargin`（`DSH_G_MEMORY_SYNTHESIS_MARGIN`），0 = 从不合成。
-- **索引只留一份。** 原来明文（30.7 MB）与压缩（15.8 MB）两份都写，而实测读压缩副本
-  **并不更慢**（0.20 s vs 0.25 s，16,769 单元）。现在压缩是主副本，明文只在没有 zstd
-  可用时写（`plain: true` 可强制）。生产索引目录 **47 MB → 16 MB**。
-- **引擎按需**（原本已实现，本轮核实并修正文档口径）：嵌入/重排/合成三个模型都由
-  `title-server-on-demand.py` 托管，空闲 `MLX_ENGINE_IDLE_SECONDS`（默认 300 秒）释放，
-  实测冷启动 0.8 s / 1.3 s / 5.6 s。守护日志里写死 "mlx_lm.server" 的措辞改为中性。
-- **脱敏与遥测不再依赖启动方式**：`zstd` 在 PATH 缺失时回退到常见绝对路径；决策日志
-  默认落盘（原先只有 web 启动器导出环境变量，桌面 App 因此完全没有遥测 —— 一个在
-  正常工作却看起来像死掉的插件）。配套：`~/bin/dsh-desktop-quick.sh` 用 `open --env`
-  传递环境（`open -a` 不传递），并新增 LaunchAgent 让"点图标启动"等价于终端启动。
-
-**实测的架构口径（供后续判断，避免重复劳动）**：索引文本 11.3 MB + 向量 12.4 MB，
-无重复单元（完全重复 0，近似重复 2.1%）；增量构建复用 91.6%；卡片 40 KB、遥测 56 KB。
-
-**Fixed — third review round: redaction gaps, evaluation credibility, and a vacuous test**
-
-Privacy, all three of the same shape (this document claimed coverage the code did
-not have):
-
-- **A private key longer than one chunk was never redacted.** The rule matches
-  `BEGIN…` against `END…` inside a single string, and the strings being redacted are
-  chunks: a measured 1,707-character RSA key split across 27 of them, and the
-  fragment holding the BEGIN line survived redaction intact. `chunkBySentence` now
-  keeps a PEM block whole — so the pair survives, the block is replaced by a
-  placeholder, and the index keeps its verbatim contract — with unterminated-marker
-  rules as a backstop for a key that was already split.
-- **Stripe keys were matched only in their documented form** (`sk-…`); every key
-  actually issued uses underscores (`sk_live_…`, `rk_live_…`).
-- **Narrowing the name rule in the previous round lost two families** — `token2=…`
-  and `secretValue=…` — while the security review kept describing the wide rule.
-
-Evaluation credibility:
-
-- `build-real-cases.mjs` builds a **synthesis** case set: it keeps only candidates
-  whose fragment already contained the answer (17 of 53 dropped) and asks the
-  question as a verbatim slice of that fragment. Any retrieval figure derived from
-  it is inflated by construction, and the file now says so at the top. (The
-  retrieval numbers quoted in this project's reports do not come from it.)
-- `eval-real.mjs` printed **"fabrication rate 0%"** when `EVAL_POSITIVE_ONLY=1`
-  skipped the negative loop entirely — a skipped measurement reported as a perfect
-  score. It now says the rate was not measured.
-- Four of the eight calibration cases had labels satisfied by hundreds of units
-  (`记忆插件` by 1,217 = 7.9%), and one asked about a model this project no longer
-  uses. Replaced with measured, rare labels. **That immediately surfaced a real
-  retrieval miss**: the new case "嵌入模型现在是多少维" finds nothing in the top 20
-  (calibration 8/8 → 7/8) — the old label had been passing by asking about a
-  retired fact.
-- `diagnose-surrogates.mjs` counted v3 and v4 of the same session separately, unlike
-  the builder; `eval-retrieval.mjs` still parsed five flags with `argv[++i]`;
-  `test-synthesis.mjs` returned `undefined` for a flag with no value;
-  `build-real-cases.mjs` hardcoded the reranker endpoint.
-
-**Fixed — a test that could not fail**
-
-`scripts/test-redaction.mjs` wrapped its checks in a *synchronous* helper, so the
-asynchronous private-key check returned a promise nobody awaited: the assertion
-failure became an unhandled rejection and the check printed ✅. It passed with the
-fix it was written for removed. Found by mutation testing — 22 mutations, each one
-breaking a specific fix and asserting that the suite notices; the first pass caught
-19, and the three misses led to this and to a fixture too small to trigger the
-head-margin rule.
-
-**Added — two tests that would have caught the above**
-
-- `scripts/test-modules-load.mjs` imports every `lib/` module and the plugin entry
-  point. `node --check` only parses: a reference to a name that was never imported
-  is a syntax-valid file that throws `ReferenceError` on load, which for
-  `lib/config.mjs` means the plugin does not start — and that is exactly how a
-  one-line edit during this review broke it.
-- `scripts/test-cli-args.mjs` pins the argument behaviour, including that an
-  argument error is reported without a stack trace.
-- `scripts/test-incremental-build.mjs` now plants a checkpoint from another model
-  and asserts both that it is refused and that a matching one is still resumed, so
-  the guard cannot silently disable resuming.
-
-**Changed — testing no longer depends on the production corpus**
-
-- `scripts/test-e2e-hermetic.mjs` is new: a stub embedding server, a stub
-  cross-encoder and a fixture index, so the automatic path (recall → rerank →
-  gate → injection) is checked end to end with no network, no model and no
-  session history. It is the check that would have caught the defect above,
-  because it configures the reranker the way a profile does — through options.
-  Wired into `npm test` and available as `npm run test:e2e`.
-- The two live `/recall` checks now skip, with a reason, when no reranker is
-  configured instead of passing or failing on corpus luck: without one the gate
-  reads the fused RRF floor, where the same code and the same query passed under
-  one embedding model and failed under the next.
-- `npm test` runs without `--strict` (environment-dependent checks report as
-  skips); `npm run test:strict` is the full run and expects a live reranker.
-- `scripts/telemetry-report.mjs` is new: trigger rate, which scale each gate read
-  (cross-encoder vs RRF fallback), verdicts, payload sizes and failed recalls.
-  The 27-hour silent degradation was visible in this data all along — nothing was
-  reading it.
-- `DEFAULT_EMBED_CONFIG` now names the deployed endpoint (11439 / `embed-gemma`),
-  so a fresh clone and the CLI point at a model that exists.
 
 ## 0.5.0 — 2026-09-24
 

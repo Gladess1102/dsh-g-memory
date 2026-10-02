@@ -360,6 +360,26 @@ Environment:
 | `DSH_G_MEMORY_CARD_MIN_SIMILARITY` | `0.35` | how similar a card must be to be admitted when no reranker is configured; `0` disables the rule |
 | `DSH_G_MEMORY_SYNTHESIS_MARGIN` | `0.2` | synthesise only when the top-two score gap is below this — i.e. when the entries must be assembled; `0` never synthesises and returns verbatim entries |
 
+## Tests
+
+```bash
+npm test            # the full chain: 12 stages, ~170 checks, no network, no models
+npm run test:strict # same, but every skip counts as a failure (release check)
+```
+
+The suite is hermetic — stub endpoints, fixture indexes, temp directories — with two
+deliberate exceptions: the JSON-schema validator and the Cordis loader are driven for
+real, because a mock registry once hid the most likely way this plugin breaks (the
+tool silently missing after a restart). Those two need a DSH installation. Without
+one they fail, unless `DSH_MEMORY_ALLOW_MISSING_HARNESS=1` is set, which records a
+skip and says so in the summary.
+
+CI sets that flag, because a clean runner cannot have the Harness: `@deepseek-ai/dsh`
+and even `@deepseek-ai/cordis` depend on packages that are not published
+(`@deepseek-ai/dsh-desktop-host` returns 404 from the registry). Everything else —
+retrieval, gating, provenance, redaction, cards, the incremental build, live indexing,
+consolidation, and a hermetic end-to-end run — runs there on Node 20 and 22.
+
 ## License
 
 MIT. This implementation is original work; it borrows *ideas* from several

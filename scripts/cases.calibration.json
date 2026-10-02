@@ -1,0 +1,60 @@
+[
+  {
+    "query": "会话日志的压缩比是多少",
+    "must": [
+      "5.95"
+    ],
+    "note": "measurement produced by a tool call, absent from conversation prose"
+  },
+  {
+    "query": "int8 量化的余弦失真有多大",
+    "must": [
+      "0.000033"
+    ],
+    "note": "quantisation distortion figure"
+  },
+  {
+    "query": "llama-server 单次输入最多多少 token",
+    "must": [
+      "512 token"
+    ],
+    "note": "physical batch limit discovered from an HTTP 500; label tightened from bare \"512\" (265 units → 61)"
+  },
+  {
+    "query": "嵌入模型现在是多少维",
+    "must": [
+      "768 维"
+    ],
+    "note": "current model dimension; the previous label asked about a retired model"
+  },
+  {
+    "query": "DSH 的会话搜索用什么索引",
+    "any": [
+      "FTS5",
+      "session-search"
+    ],
+    "note": "built-in full-text search"
+  },
+  {
+    "query": "cordis 插件挂载失败怎么排查",
+    "must": [
+      "挂载失败"
+    ],
+    "note": "was bare \"挂载\" (221 units → 40)"
+  },
+  {
+    "query": "记忆插件的调研结论",
+    "any": [
+      "dsh-memory-toolkit",
+      "dsh-guild"
+    ],
+    "note": "was bare \"记忆插件\" (1,217 units = 7.9% → 20 and 10)"
+  },
+  {
+    "query": "视频封面是怎么生成的",
+    "any": [
+      "封面"
+    ],
+    "note": "video cover workflow"
+  }
+]

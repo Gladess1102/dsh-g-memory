@@ -1,0 +1,16 @@
+# dsh-g-memory bundle patch.
+#
+# A bundle declares this file through `dsh.bundle.patch` in package.json, and
+# `plugin_manager install_bundle` applies it as one layer of the profile's
+# composed tree. Installing the bundle is therefore the whole setup: the row
+# below is what mounts the plugin, and it travels with the package instead of
+# being hand-written into each profile's own cordis.patch.yml.
+#
+# The index is NOT built here. It is a separate, explicit step, because indexing
+# every session log is expensive and embedding needs a reachable model:
+#
+#   node node_modules/dsh-g-memory/bin/dsh-g-memory.mjs build
+#
+- insert:
+    - id: dsh-g-memory
+      name: dsh-g-memory

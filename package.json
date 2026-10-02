@@ -1,0 +1,74 @@
+{
+  "name": "dsh-g-memory",
+  "version": "0.6.0",
+  "description": "Cross-session semantic memory for DeepSeek Harness: indexes session history locally with EmbeddingGemma-300M embeddings and recalls relevant past context, injecting it as clearly-framed untrusted context. No runtime dependencies, no service to run, synthesis opt-in.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "memory",
+    "semantic-search",
+    "embeddings",
+    "llama.cpp"
+  ],
+  "license": "MIT",
+  "author": "Gladess1102",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Gladess1102/dsh-g-memory.git"
+  },
+  "homepage": "https://github.com/Gladess1102/dsh-g-memory#readme",
+  "bugs": {
+    "url": "https://github.com/Gladess1102/dsh-g-memory/issues"
+  },
+  "private": false,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "lib",
+    "bin",
+    "scripts",
+    "docs",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node bin/dsh-g-memory.mjs build",
+    "stats": "node bin/dsh-g-memory.mjs stats",
+    "recall": "node bin/dsh-g-memory.mjs recall",
+    "selfcheck": "node bin/dsh-g-memory.mjs selfcheck",
+    "plugincheck": "node bin/dsh-g-memory.mjs plugincheck",
+    "test": "node scripts/test-modules-load.mjs && node scripts/test-cli-args.mjs && node scripts/test-policy.mjs && node scripts/test-redaction.mjs && node scripts/test-cards.mjs && node scripts/test-store-damage.mjs && node scripts/test-live-index.mjs && node scripts/test-consolidate.mjs && node scripts/test-plugin.mjs && node scripts/test-loader-contract.mjs && node scripts/test-incremental-build.mjs && node scripts/test-e2e-hermetic.mjs",
+    "test:unit": "node scripts/test-policy.mjs && node scripts/test-redaction.mjs && node scripts/test-cards.mjs && node scripts/test-store-damage.mjs",
+    "test:loader": "node scripts/test-loader-contract.mjs",
+    "test:synthesis": "node scripts/test-synthesis.mjs",
+    "eval": "node scripts/eval-retrieval.mjs",
+    "eval:calibration": "node scripts/eval-retrieval.mjs --cases scripts/cases.calibration.json",
+    "diagnose:surrogates": "node scripts/diagnose-surrogates.mjs",
+    "test:build": "node scripts/test-incremental-build.mjs",
+    "test:e2e": "node scripts/test-e2e-hermetic.mjs",
+    "test:strict": "node scripts/test-plugin.mjs --strict",
+    "test:policy": "node scripts/test-policy.mjs",
+    "test:load": "node scripts/test-modules-load.mjs",
+    "test:cli": "node scripts/test-cli-args.mjs",
+    "test:consolidate": "node scripts/test-consolidate.mjs",
+    "test:live": "node scripts/test-live-index.mjs"
+  },
+  "bin": {
+    "dsh-g-memory": "bin/dsh-g-memory.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

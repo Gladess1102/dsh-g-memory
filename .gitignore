@@ -1,0 +1,17 @@
+# Build artifacts and local state
+index/
+node_modules/
+*.log
+.embed-checkpoint.json
+.DS_Store
+
+# Live index state (the worker writes these beside the index)
+.live-progress.json
+.index.lock
+*.zstd
+*.tmp-*
+stats.jsonl
+
+# Local evaluation output
+eval-*.json
+cases-*.local.json

@@ -1,0 +1,39 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    env:
+      # A scratch DSH home, so nothing in the suite reads or writes a real one.
+      # `github.workspace`, not `runner.temp`: the `runner` context is only valid in
+      # step-level env, and using it at job level makes GitHub reject the whole file
+      # ("workflow file issue", a 0-second failure with no jobs at all).
+      DSH_HOME: ${{ github.workspace }}/.dsh-home
+      # Two stages drive the real Harness instead of mocks — the JSON-schema
+      # validator and the Cordis loader — because a mock registry once hid the most
+      # likely way this plugin breaks (the tool silently missing after a restart).
+      # They load exactly two packages, which is what gets installed below; the full
+      # `@deepseek-ai/dsh` app package is 506 MB and would only slow the job down.
+      DSH_CHECKOUT: ${{ github.workspace }}/.harness
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # The index store shells out to the zstd CLI for compressed session logs.
+      - name: Install zstd
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+      - name: Install the two Harness packages the strict stages load
+        run: npm install --prefix "$DSH_CHECKOUT" --no-audit --no-fund @deepseek-ai/dsh-tools @deepseek-ai/cordis
+      - name: Test
+        run: npm test

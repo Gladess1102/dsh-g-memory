@@ -22,6 +22,8 @@ embedding server. Optional LLM synthesis is **off unless you name an endpoint**
 | Streaming fragment events (`chunk` families) | ❌ | 84.6% of all events in a typical log; no independent meaning. |
 | `tool/result` — measurements, errors, command output | ✅ | **The most fact-dense content in the log.** On the development corpus the strings `5.95`, `-0.000033` and `512 token` appeared **zero** times in conversation prose and *only* in tool output. Without these, the memory can recall "what we discussed" but never "what we measured". |
 | `tool/result` — file reads, blob JSON | ❌ | Re-readable on demand, and they crowd out real memories. |
+| `tool/call` — a call that **names a file** (`write`, `edit`, …) | ✅ | **The only record of a file's history.** The disk keeps the latest state, so what was overwritten or deleted exists nowhere else. Measured on this corpus: 1,004 such calls holding 2.45 MiB, of which **6.7%** of sampled windows were findable anywhere in the index and **71% of the calls were findable nowhere** — the memory could not answer "which file did we put that in". After indexing them: **97.1%** and **1%**. |
+| `tool/call` — shell commands, `run_code` bodies | ❌ | Measured at +4.0 MiB and +6.9 MiB of mostly re-runnable noise. A file write is a durable artefact; a scratch computation is not. |
 
 Chunks are cut at **sentence boundaries** (800 chars for prose, 1200 for tool
 output, 120-char overlap). This is not cosmetic: fixed-width cutting separated
@@ -32,11 +34,20 @@ lets the retrieval arms complement each other.
 
 Two arms, fused with Reciprocal Rank Fusion:
 
-- **vector** — BGE-M3 (1024-d), int8-quantised, cosine over every unit
+- **vector** — 768-d embeddings from **EmbeddingGemma-300M** (the current
+  default: `embed.model: embed-gemma`, `embed.url: http://127.0.0.1:11439`),
+  int8-quantised, cosine over every unit. BGE-M3 (1024-d) came before it and is
+  still supported by configuration; the switch halved the model size and won on
+  this corpus's real queries (bench report kept outside the repository, since it
+  quotes them).
+  An index is only valid in the space that produced it, so a model change
+  invalidates reuse and is refused rather than mixed.
 - **lexical** — adjacent-character **bigram** tokenisation over CJK plus whole
   Latin words, idf-weighted
 
-Measured on this machine's corpus with 8 labelled Chinese queries:
+Measured on this machine's corpus with 8 labelled Chinese queries (**measured on
+the earlier BGE-M3 index — the shape of the result, not the exact figures, is what
+carries over**):
 
 | Arm | top-1 | top-3 | top-20 |
 |---|---|---|---|
@@ -79,6 +90,28 @@ sensitive: it is written `0600` inside a `0700` directory for that reason.
 unavailable; `readIndex` prefers the compressed copy. Delete the uncompressed
 one to reclaim two thirds of the space — it is rebuilt on the next `build`.
 
+**A changed extractor re-reads the logs once, by design.** The live index keeps a
+per-session watermark and only reads events after it, which is what makes it cheap;
+that also means a rule which newly admits an event type would never see the older
+events again. So the extractor revision (`EXTRACTOR_VERSION` in
+`lib/session-source.mjs`) is recorded in **its own file** beside the index, and a
+mismatch makes the next pass re-read every log from event zero. Its own file
+matters: the watermark file is read-modify-written by whatever process is running,
+including one started before this concept existed — measured while an older host was
+still alive, a revision stored there was stripped every ~30 s, so every pass saw an
+unknown revision and re-read all 107 logs (3.1 s each, silently). It is a re-read, not a re-embed: units are
+deduplicated by content hash, so only genuinely new text costs a vector. Measured
+when the authoring rule landed: 105 logs re-read over 6 bounded passes, 185 s,
++1,995 units of which 1,752 were authoring calls.
+
+That dedup is by **text**, and the role is not part of the hash — so a role stored
+wrongly used to be permanent: every later re-read matched on the hash and skipped the
+unit. (Observed for real: an index read back by a version whose role whitelist did
+not yet know `action` came back with those units relabelled `tool`.) A re-read now
+corrects a mismatched role in place and counts it separately, so the pass writes the
+index even when it added no text. Measured on a copy of that washed live store: one
+pass corrected 1,799 roles in 8.3 s.
+
 ## Requirements
 
 - Node.js >= 20 (`toWellFormed`, `AbortSignal.timeout`).
@@ -87,7 +120,7 @@ one to reclaim two thirds of the space — it is rebuilt on the next `build`.
   independently flushed zstd frames, which `node:zlib` refuses, so indexing
   cannot read them without it. Note that stock macOS does **not** ship `zstd`
   (`brew install zstd`).
-- A BGE-M3-compatible `/v1/embeddings` endpoint for building the index and for
+- An OpenAI-compatible `/v1/embeddings` endpoint for building the index and for
   every query. `llama-server` with an embedding model works; see `DSH_G_MEMORY_EMBED_URL`.
 
 ## Install
@@ -217,6 +250,14 @@ supersede would be unrecoverable.
 `memory_forget` withdraws a memory by id or by query. Retiring is the default and
 keeps the card as evidence; `hard: true` removes it from the store entirely.
 
+Cards also come from sessions, not only from `memory_note`: after a session has been
+idle and enough material has accumulated, the consolidation pass distils it into one
+card. That pass is **off by default** because it spends model calls — enable it with
+`consolidate: { enabled: true }` in the composition (or `DSH_G_MEMORY_CONSOLIDATE=on`),
+and give it the endpoint through `synthesis: { baseUrl, model }`. A switched-off pass
+records a single `consolidate-skip` line in the decision log, because a feature that
+reports nothing is indistinguishable from one that finds nothing to do.
+
 Injection sees only current memories. Explicit recall sees everything, labelled — a
 corrected fact arrives with its correction visible rather than masquerading as the
 latest word. Every transition is written to the decision log.
@@ -323,7 +364,7 @@ Every knob below can also be set per deployment in the composition
 | `DSH_G_MEMORY_MAX_ENTRIES` | `3` | Hard cap on injected entries. |
 | `DSH_G_MEMORY_MAX_TOTAL_CHARS` | `1200` | Hard cap on the **whole injected block**, frame included. |
 | `DSH_G_MEMORY_RECALL_MODE` | `hybrid` | `context` (inject only), `tools` (tool only) or `hybrid`. |
-| `DSH_G_MEMORY_CONSOLIDATE` | `off` | Enables the self-cycling consolidation pass. |
+| `DSH_G_MEMORY_CONSOLIDATE` | `off` | Enables the self-cycling consolidation pass. Same switch as `consolidate.enabled` in a composition, which is the way to set it in a deployment; a composition value wins over the environment. |
 | `DSH_G_MEMORY_CONSOLIDATE_HOURS` | `24` | Minimum interval between consolidation runs. |
 | `DSH_G_MEMORY_CONSOLIDATE_MIN_TURNS` | `5` | Material gate: turns a session needs before it is worth distilling. |
 | `DSH_G_MEMORY_CONSOLIDATE_IDLE_MS` | `600000` | Idle time that counts as "this session finished". |
@@ -335,9 +376,18 @@ node bin/dsh-g-memory.mjs plugincheck      # verify the mount WITHOUT restarting
 node bin/dsh-g-memory.mjs selfcheck        # verify the embedding endpoint
 node bin/dsh-g-memory.mjs build            # build the index from session logs
 node bin/dsh-g-memory.mjs build --no-tool  # conversation only (smaller index)
+node bin/dsh-g-memory.mjs build --no-tool-calls   # skip what write/edit wrote
 node bin/dsh-g-memory.mjs stats            # composition and on-disk size
 node bin/dsh-g-memory.mjs recall "when did we fix the title server?"
+node scripts/workspace-key.mjs               # which session directory this workspace maps to
 ```
+
+`workspace-key` answers "are this project's conversations grouped, and does the memory
+index see them?" It prints the directory DSH stores a workspace's sessions in, how many
+are there, and how many of those the index holds units for. The rule is transcribed from
+the harness (`dsh-session-persistence-jsonl`'s `projectKey`) and was verified against this
+machine: the derived key equalled the real directory name for 10 of 10 sessions with a
+readable log header.
 
 ### `plugincheck` — run this after changing the tool definition
 
@@ -391,9 +441,25 @@ Environment:
 Two labelled case sets, with different jobs:
 
 ```bash
-npm run eval:calibration   # the regression gate: cases that pass today, 100% required
-npm run eval:challenge     # the measured frontier: cases that do not pass yet
+npm run eval:calibration   # the regression gate: 22 cases, 100% required, index layer only
+npm run eval:challenge     # the measured frontier: currently empty (nothing known to fail)
 ```
+
+The gate passes `--no-cards` on purpose. Scoring both layers is the honest measure of
+what the product searches, but the card store is machine-local data that drifts with
+use, and a gate must be reproducible: with cards in the pool, a unit-layer regression
+can be masked by a card that happens to hold the answer (measured on the earlier
+20-case set: 9 of them were also answerable from a card). `npm run eval` keeps both
+layers visible; the gate keeps the index layer accountable.
+
+Labelled cases are scored against **both** layers the product searches: index units
+and durable cards (`cardEntries`, the same pre-filter and retirement rule the live
+paths use). Scoring units alone measured a pool neither path builds — `memory_recall`
+and automatic recall put cards and units into one pool and rerank them together — and
+cards, being distilled summaries, can hold an answer in one sentence. `--no-cards`
+reproduces the old number. Measured when the layer was added: calibration 20/20 either
+way and the challenge set 0/2 either way, so no case is card-only today; the change
+makes the check measure the right pool rather than moving the score.
 
 `scripts/cases.calibration.json` is a gate — a curated set where every case must pass,
 checked against the local index through the real retrieval path. `scripts/cases.challenge.json`
@@ -402,6 +468,12 @@ holds cases the system does **not** pass yet, across dimensions the gate does no
 They are kept as a tracked score rather than folded into the gate: a permanently red
 gate stops being read, and the point of these cases is to name the weakness precisely.
 
+**It is currently empty, and that is a result.** Its two governance cases were marked
+`UNANSWERABLE BY DESIGN` because their answers exist only in tool *arguments* — the
+files the agent wrote — which the index did not read at all. The authoring extractor
+closed that gap (measured 2/2), so both were promoted into the gate, where they now
+guard the coverage they used to measure the lack of.
+
 A third file, `scripts/cases-personal.local.json`, is deliberately **not** in the
 repository: its cases quote the machine owner's own notes, and an evaluation does not
 need to ship them to be useful.
@@ -409,7 +481,7 @@ need to ship them to be useful.
 ## Tests
 
 ```bash
-npm test            # the full chain: 12 stages, ~170 checks, no network, no models
+npm test            # the full chain: 12 stages, 210 checks, no network, no models
 npm run test:strict # same, but every skip counts as a failure (release check)
 ```
 

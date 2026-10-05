@@ -156,6 +156,24 @@ await check('an orphaned unit survives the round trip and is labelled unverifiab
   assert.doesNotMatch(plainLine, /unverifiable \(source deleted\)/);
 });
 
+await check('an authoring unit keeps its role across the round trip', async () => {
+  // The deserialiser coerces any role it does not recognise to `tool`. That turned
+  // an `action` unit — a tool the agent *issued* — back into a tool *result* on
+  // every read, so the label the synthesis prompt uses would have been wrong for
+  // 2.12 MiB of authored content while the index itself looked correct.
+  const indexed = fixture();
+  indexed.data.units[0].role = 'action';
+  const back = deserializeIndex(serializeIndex(indexed));
+  assert.equal(back.unit(0).role, 'action', 'a known role must survive');
+  assert.equal(back.unit(1).role, 'user', 'and its neighbours must be untouched');
+
+  // An unknown role is still coerced rather than trusted: the whitelist is what
+  // stops a hand-edited index from inventing a role nothing else understands.
+  const damaged = fixture();
+  damaged.data.units[0].role = 'root';
+  assert.equal(deserializeIndex(serializeIndex(damaged)).unit(0).role, 'tool');
+});
+
 await check('the cache fingerprint changes when the embedding model does', async () => {
   // Content hashes are model-independent, so a fingerprint built only from them
   // was identical across models — and a synthesis answer produced from the old

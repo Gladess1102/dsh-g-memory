@@ -1,6 +1,6 @@
 {
   "name": "dsh-g-memory",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Cross-session semantic memory for DeepSeek Harness: indexes session history locally with EmbeddingGemma-300M embeddings and recalls relevant past context, injecting it as clearly-framed untrusted context. No runtime dependencies, no service to run, synthesis opt-in.",
   "keywords": [
     "deepseek-harness",
@@ -52,7 +52,7 @@
     "test:loader": "node scripts/test-loader-contract.mjs",
     "test:synthesis": "node scripts/test-synthesis.mjs",
     "eval": "node scripts/eval-retrieval.mjs",
-    "eval:calibration": "node scripts/eval-retrieval.mjs --cases scripts/cases.calibration.json",
+    "eval:calibration": "node scripts/eval-retrieval.mjs --cases scripts/cases.calibration.json --no-cards",
     "diagnose:surrogates": "node scripts/diagnose-surrogates.mjs",
     "test:build": "node scripts/test-incremental-build.mjs",
     "test:e2e": "node scripts/test-e2e-hermetic.mjs",

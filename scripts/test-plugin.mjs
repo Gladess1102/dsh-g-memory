@@ -18,10 +18,11 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { defaultIndexDir } from '../lib/store.mjs';
+import { AutoRecall } from '../lib/auto-recall.mjs';
 import { selectForInjection } from '../lib/inject.mjs';
 import { resolveRerankConfig, DEFAULT_RERANK } from '../lib/rerank.mjs';
 import { isRefusal, buildSynthesisPrompt, NO_MEMORY_SENTINEL } from '../lib/synthesize.mjs';
@@ -31,11 +32,32 @@ import { isRefusal, buildSynthesisPrompt, NO_MEMORY_SENTINEL } from '../lib/synt
 // scripts/test-loader-contract.mjs pins that rule down.
 import * as plugin from '../lib/index.js';
 import { findSchemaValidator } from '../lib/harness.mjs';
-import { decompressZstdFile, extractUnits } from '../lib/session-source.mjs';
+import { decompressZstdFile, extractUnits, renderAuthoringCall } from '../lib/session-source.mjs';
 // Tests must not write the production decision log: `record()` appends to
 // DSH_G_MEMORY_AUTO_STATS, and a simulated failure that lands in the real telemetry
 // looks exactly like a production failure. Point it at a temp file for this process.
 process.env.DSH_G_MEMORY_AUTO_STATS = join(await mkdtemp(join(tmpdir(), 'gm-stats-')), 'stats.jsonl');
+
+/**
+ * The decision log, parsed. `record()` is fire-and-forget, so a short wait is part
+ * of reading it — asserting immediately after an action reads the file before the
+ * append lands, which is indistinguishable from the event never being written.
+ */
+async function telemetry() {
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  let raw = '';
+  try {
+    raw = readFileSync(process.env.DSH_G_MEMORY_AUTO_STATS, 'utf8');
+  } catch {
+    return []; // no file yet means nothing has been recorded, which is not an error
+  }
+  return raw.split('\n').filter(Boolean).map((line) => JSON.parse(line));
+}
+
+/** How many events of one kind the log holds right now. */
+async function telemetryCount(event) {
+  return (await telemetry()).filter((e) => e.event === event).length;
+}
 
 /**
  * The Harness's own schema validator, when this checkout can see it.
@@ -550,8 +572,265 @@ async function main() {
           assert.ok(units.some((u) => u.role === 'user'));
           assert.ok(units.some((u) => u.role === 'assistant'));
         });
+
+        // ------------------------------------------------ authoring tool calls
+        // A `write`/`edit` call is the only record of what a file held before it
+        // changed: the disk keeps the latest state. Measured before this existed,
+        // over 120 real logs, 912 authoring calls held 2.12 MiB of which a mean of
+        // 2.3% of shingles appeared anywhere in the index and 80% appeared nowhere
+        // — the plugin could not answer "which file did we put that in".
+        await check('an authoring call is recognised by its shape, not its tool name', () => {
+          const wrote = renderAuthoringCall('write', { file_path: '/tmp/a.mjs', content: 'export const x = 1;' });
+          assert.match(wrote, /^\[write\] \/tmp\/a\.mjs\n\+ export const x = 1;$/);
+          // The same call under a different harness name is still the same event.
+          assert.match(renderAuthoringCall('create_file', { path: '/tmp/b.py', content: 'x = 1' }), /^\[create_file\] \/tmp\/b\.py/);
+        });
+        await check('an edit renders what was removed and what replaced it', () => {
+          const edited = renderAuthoringCall('edit', {
+            file_path: '/tmp/a.mjs',
+            old_string: 'const a = 1;\nconst b = 2;',
+            new_string: 'const a = 3;\nconst b = 2;',
+          });
+          assert.match(edited, /- const a = 1;\n- const b = 2;/);
+          assert.match(edited, /\+ const a = 3;\n\+ const b = 2;/);
+        });
+        await check('a call that names no file is not an authoring call', () => {
+          // Every one of these is a real signature on this corpus.
+          assert.equal(renderAuthoringCall('read', { file_path: '/tmp/a.mjs' }), '', 'a read has a path but no text');
+          assert.equal(renderAuthoringCall('bash', { command: 'ls -la', description: 'list' }), '', 'a command has no path');
+          assert.equal(renderAuthoringCall('run_code', { code: 'print(1)', description: 'x' }), '', 'code without a target file is scratch');
+          assert.equal(renderAuthoringCall('present', { files: [{ path: '/tmp/a' }] }), '', 'a nested path is not a written file');
+          assert.equal(renderAuthoringCall('write', { content: 'no path here' }), '');
+        });
+        await check('a written file becomes an `action` unit, and can be switched off', async () => {
+          const log = [
+            JSON.stringify({ type: 'session', id: 'test-session-2' }),
+            JSON.stringify({
+              type: 'tool/call',
+              seq: 3,
+              time: Date.now(),
+              data: {
+                name: 'write',
+                arguments: JSON.stringify({
+                  file_path: '/tmp/tokenizer.mjs',
+                  content: 'export const CHUNK_CHARS = 800; // the measured chunk budget for conversational text',
+                }),
+              },
+            }),
+          ].join('\n');
+          const on = extractUnits(log, { includeToolResults: false });
+          const action = on.units.filter((u) => u.role === 'action');
+          assert.equal(action.length, 1, `expected one action unit, got ${on.units.length} units`);
+          assert.equal(on.stats.actionUnits, 1);
+          assert.match(action[0].text, /\[write\] \/tmp\/tokenizer\.mjs/);
+          assert.match(action[0].text, /CHUNK_CHARS = 800/);
+          const off = extractUnits(log, { includeToolResults: false, includeToolCalls: false });
+          assert.equal(off.units.length, 0, 'the switch must remove the whole class');
+        });
+        await check('one oversized write cannot flood the index', () => {
+          // A minified bundle or a generated lockfile written to disk. The cap keeps
+          // head and tail — the opening lines name the file, the closing ones hold
+          // the entry point — and the median real call (1,531 chars) is untouched.
+          // Pseudo-random, NOT a run of one character: the chunker trims and the
+          // hash dedups repeated text, so `'x'.repeat(200_000)` collapsed to ~3.9 KB
+          // of units and the "under 20,000 chars" assertion passed with the cap
+          // removed entirely. Measured with real entropy: 8.7 KB of units with the
+          // cap, 222 KB without.
+          let seed = 12_345;
+          const huge = Array.from({ length: 200_000 }, () => {
+            seed = (seed * 1_103_515_245 + 12_345) & 0x7fffffff;
+            return String.fromCharCode(33 + (seed % 90));
+          }).join('');
+          const log = JSON.stringify({
+            type: 'tool/call',
+            seq: 4,
+            time: Date.now(),
+            data: {
+              name: 'write',
+              arguments: JSON.stringify({
+                file_path: '/Users/yangyuxin/project/dist/bundle.min.js',
+                content: huge,
+              }),
+            },
+          });
+          const { units } = extractUnits(log, { includeToolResults: false });
+          const chars = units.reduce((n, u) => n + u.text.length, 0);
+          assert.ok(chars < 20_000, `a 200 KB write must not enter at full size, got ${chars}`);
+          assert.ok(units.length <= 12, `and it must not explode into many units, got ${units.length}`);
+          assert.ok(
+            units.some((u) => u.text.includes('[write] /Users/yangyuxin/project/dist/bundle.min.js')),
+            'the unit must still name the file it came from',
+          );
+        });
+        await check('tool results and tool calls are switched off independently', () => {
+          // Both halves of the tool traffic live in the same loop, so one branch
+          // swallowing the other would show up as a silently half-indexed corpus.
+          const log = [
+            JSON.stringify({ type: 'session', id: 's' }),
+            JSON.stringify({
+              type: 'tool/result', seq: 6, time: 1,
+              data: { message: { content: [{ type: 'text', text: '压缩比 5.95，耗时 0.45 秒，索引 18.07 MB 单副本。' }] } },
+            }),
+            JSON.stringify({
+              type: 'tool/call', seq: 7, time: 2,
+              data: { name: 'write', arguments: JSON.stringify({ file_path: '/tmp/switch.mjs', content: 'export const KEEP = "the authoring half";' }) },
+            }),
+          ].join('\n');
+          const both = extractUnits(log, {});
+          assert.equal(both.units.filter((u) => u.role === 'tool').length, 1, 'the result indexes');
+          assert.equal(both.units.filter((u) => u.role === 'action').length, 1, 'the call indexes');
+          const noResults = extractUnits(log, { includeToolResults: false });
+          assert.equal(noResults.units.filter((u) => u.role === 'tool').length, 0);
+          assert.equal(noResults.units.filter((u) => u.role === 'action').length, 1, 'a call survives the results switch');
+          const noCalls = extractUnits(log, { includeToolCalls: false });
+          assert.equal(noCalls.units.filter((u) => u.role === 'action').length, 0);
+          assert.equal(noCalls.units.filter((u) => u.role === 'tool').length, 1, 'a result survives the calls switch');
+        });
+
+        await check('an unparsable call is counted rather than silently dropped', () => {
+          const log = JSON.stringify({
+            type: 'tool/call', seq: 5, time: Date.now(),
+            data: { name: 'write', arguments: '{"file_path": "/tmp/x", "content": "trunc' },
+          });
+          const { units, stats } = extractUnits(log, { includeToolResults: false });
+          assert.equal(units.length, 0);
+          assert.equal(stats.authoringUnparsable, 1, 'a truncated log must be visible, not look like an empty one');
+        });
       }
       rmSync(dir, { recursive: true, force: true });
+    }
+
+    // ------------------------------------------------- auto path: the wiring
+    // The durable-card loop was dead in production, and the first of its three
+    // causes was here: `apply()` never passed `consolidate` to AutoRecall, so the
+    // composition knob was dropped at the wiring point — the same defect this file
+    // already documents for `rerank` and `policy`. No behavioural test could see
+    // it, because nothing observable changes until a session finishes AND a day
+    // passes; so the wiring itself is asserted.
+    await check('every option the automatic path reads is actually passed to it', () => {
+      const wired = plugin.autoRecallOptions(
+        {
+          embed: { url: 'http://embed' }, rerank: { url: 'http://rerank' },
+          policy: { marginGate: 1.18 }, synthesis: { enabled: true },
+          consolidate: { enabled: true }, autoConfig: { candidates: 5 }, apiKey: 'k',
+        },
+        '/tmp/index',
+      );
+      // The list is every `options.X` / `this.options.X` the class reads, taken
+      // from the source rather than from memory of it.
+      for (const key of ['indexDir', 'embed', 'rerank', 'policy', 'synthesis', 'apiKey', 'auto']) {
+        assert.ok(wired[key] !== undefined, `AutoRecall reads options.${key}; it must be passed`);
+      }
+      // The names differ on purpose (composition `consolidate` → class
+      // `consolidation`), which is exactly why a spread would not have helped.
+      assert.deepEqual(wired.consolidation, { enabled: true }, 'consolidate must reach the tracker');
+      assert.equal(wired.indexDir, '/tmp/index');
+    });
+
+    // ------------------------------- auto path: the consolidation switch
+    // The durable-card loop's third cause was that "switched off" and "nothing to do"
+    // were indistinguishable: `shouldRun()` returns `{run:false, why:'disabled'}` and
+    // the tick returned before writing anything, so a deployment where cards were off
+    // looked exactly like one where no session had finished yet. The decision log is
+    // the only place that difference can live, so it is asserted here — twice, because
+    // the opposite mistake (a composition that enables it being dropped at the wiring
+    // point) is this plugin's most repetitive defect and would show up as the same
+    // line appearing when it should not.
+    await check('a switched-off consolidation loop says so in the decision log', async () => {
+      const before = await telemetryCount('consolidate-skip');
+      const { ctx } = makeCtx();
+      plugin.apply(ctx, { liveIndex: { enabled: false } });
+      assert.equal(await telemetryCount('consolidate-skip'), before + 1,
+        'off must be recorded once per process, or nobody can tell it from idle');
+    });
+
+    await check('a composition that enables consolidation reaches the tracker', async () => {
+      const before = await telemetryCount('consolidate-skip');
+      const { ctx } = makeCtx();
+      plugin.apply(ctx, { consolidate: { enabled: true }, liveIndex: { enabled: false } });
+      assert.equal(await telemetryCount('consolidate-skip'), before,
+        'an enabled loop must not report itself disabled — which is what a dropped `consolidate` looks like');
+    });
+
+    // ------------------------------------------- auto path: finding the log
+    // The second cause: `transcriptFor` accepted only `session.jsonl.zstd` and
+    // `session.v3.jsonl.zstd`, and DSH 0.1.7 moved to `session.v4.jsonl.zstd`, so
+    // every modern session read as an empty transcript and was skipped as "too
+    // short". These checks run against real zstd frames, because the version rule
+    // and the frozen-prefix rule are both about file names on disk.
+    {
+      const home = mkdtempSync(join(tmpdir(), 'gm-transcript-'));
+      const sessionDir = join(home, 'sessions', '--root--', 'session-abc123');
+      mkdirSync(sessionDir, { recursive: true });
+      const events = (marker) => [
+        JSON.stringify({ type: 'session', id: 'sess-1', seq: 0 }),
+        JSON.stringify({ type: 'user/message', seq: 1, time: 1, data: { content: [{ type: 'text', text: marker }] } }),
+      ].join('\n');
+      const writeLog = (name, marker) => {
+        const plain = join(sessionDir, `${name}.plain`);
+        writeFileSync(plain, events(marker));
+        execFileSync('zstd', ['-q', '-f', plain, '-o', join(sessionDir, name)]);
+        rmSync(plain, { force: true });
+      };
+      // Both versions present: the older file is a frozen prefix of the newer one,
+      // so taking it would distil a stale transcript. The markers are longer than
+      // MIN_CHUNK_CHARS, because a shorter one is dropped by the chunker and the
+      // check would then pass for the wrong reason.
+      writeLog('session.v3.jsonl.zstd', '这句话只存在于冻结的 v3 前缀里，它代表升级之前的旧内容。');
+      writeLog('session.v4.jsonl.zstd', '这句话写在当前会话的 v4 日志里，它代表升级之后的新内容。');
+
+      const previousHome = process.env.DSH_HOME;
+      process.env.DSH_HOME = home;
+      const recall = new AutoRecall({ on: () => () => {}, logger: {} }, { consolidate: false });
+      try {
+        await check('a v4 session log is found (a fixed v3 name is not)', async () => {
+          const { text, log } = await recall.transcriptFor('session-abc123');
+          assert.ok(log !== null, 'the log must be located');
+          assert.match(log, /session\.v4\.jsonl\.zstd$/, 'the newest version is the one to read');
+          assert.match(text, /写在当前会话的 v4 日志里/);
+          assert.doesNotMatch(text, /只存在于冻结的 v3 前缀里/, 'the frozen v3 prefix must not be read instead');
+        });
+        await check('an unknown agent id reports "no log", not "empty transcript"', async () => {
+          const { text, log } = await recall.transcriptFor('session-does-not-exist');
+          assert.equal(log, null, 'the caller retries on null and skips on a short string');
+          assert.equal(text, '');
+        });
+
+        // The decision the caller makes about those two outcomes is what let the
+        // v4 defect hide for a week: "no log at all" was routed into the same
+        // `continue` as "a session with nothing in it", so a log the code could not
+        // *read* looked like a session that had nothing to say. Both outcomes are
+        // pinned here, because a mutation that turns the failure back into a silent
+        // skip passed the whole suite until these checks existed.
+        const statsLines = telemetry;
+
+        await check('a session with no log is reported as a failure, so it is retried', async () => {
+          const failed = await recall.distill(['session-does-not-exist']);
+          assert.deepEqual([...failed], ['session-does-not-exist'],
+            'the material may still be there: keeping the turns is what retries it');
+          const events = await statsLines();
+          const error = events.find((e) => e.event === 'consolidate-error');
+          assert.ok(error, 'the reason must reach the decision log');
+          assert.match(error.message, /no session log found/);
+          assert.equal(events.some((e) => e.event === 'consolidate-result'), false,
+            'it must not be recorded as a session that simply had nothing to remember');
+        });
+
+        await check('a session that is genuinely too short is recorded, not retried', async () => {
+          // `session-abc123` holds one short line — under the 200-character floor.
+          const failed = await recall.distill(['session-abc123']);
+          assert.deepEqual([...failed], [], 'a short session is dealt with, not retried forever');
+          const events = await statsLines();
+          const result = events.find((e) => e.event === 'consolidate-result');
+          assert.ok(result, 'the skip must be answerable from disk: "why was this never remembered?"');
+          assert.equal(result.stored, false);
+          assert.match(result.reason, /transcript too short/);
+        });
+      } finally {
+        if (previousHome === undefined) delete process.env.DSH_HOME;
+        else process.env.DSH_HOME = previousHome;
+        rmSync(home, { recursive: true, force: true });
+      }
     }
 
     // ------------------------------------------------------------------ /recall

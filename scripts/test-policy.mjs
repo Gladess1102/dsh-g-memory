@@ -137,6 +137,32 @@ await check('a synthesised answer is not labelled a verbatim excerpt', async () 
   assert.match(rendered, /"synthesized answer"\s*\n?\s*was written by a model/);
 });
 
+await check('an authored change is labelled as history, not as transcript prose', async () => {
+  // An `action` unit is a `write`/`edit` tool call kept verbatim. It is verbatim,
+  // but it is not the file's current content: the file may have been rewritten or
+  // deleted since. Under the generic "transcript excerpt" label a model is free to
+  // read `+ const x = 1` as "the file contains x = 1" — a wrong memory, and this
+  // plugin treats a wrong memory as worse than a missing one.
+  const entry = {
+    role: 'action',
+    text: '[write] /tmp/a.mjs\n+ export const CHUNK_CHARS = 800;',
+    time: Date.now() - 3_600_000,
+  };
+  const rendered = renderRecall([entry]);
+  assert.match(rendered, /authored change, verbatim — the file may have changed since/);
+  assert.match(rendered, /"authored change"\s*\n?\s*is a tool call/, 'the footer must define the label it uses');
+
+  // Both facts survive together: an orphaned action unit is still an authored
+  // change. The orphan branch used to come first and would have said "transcript
+  // excerpt" about a tool call.
+  const orphan = renderRecall([{ ...entry, orphaned: true }]);
+  assert.match(orphan, /authored change/);
+  assert.match(orphan, /unverifiable \(source deleted\)/);
+
+  // And a plain excerpt must not pick up the new label.
+  assert.match(renderRecall([{ role: 'user', text: '一段对话' }]), /\(transcript excerpt, /);
+});
+
 await check('a card is judged by its own similarity when there is no reranker', async () => {
   // Cards enter the pool with score 0 (they are not RRF hits), so the floor rejects
   // every one — the layer that survives a deleted transcript was unreachable

@@ -76,6 +76,7 @@ function parseArgs(argv) {
   for (; i < argv.length; i += 1) {
     const token = argv[i];
     if (token === '--no-tool') args.noTool = true;
+    else if (token === '--no-tool-calls') args.noToolCalls = true;
     else if (token === '--fresh') args.fresh = true;
     else if (token === '--out') args.out = value('--out');
     else if (token === '--limit') args.limit = count('--limit');
@@ -96,7 +97,9 @@ function usage() {
 
   build        Build the index from DSH session logs
                --out DIR   index directory (default: $DSH_HOME/dsh-g-memory/index)
-               --no-tool   index conversation only (skips tool results)
+               --no-tool        index conversation only (skips tool results)
+               --no-tool-calls  skip the arguments of authoring tool calls
+                                (write/edit: what a file held before it changed)
                --limit N   index at most N session logs
                --fresh     ignore the previous index and checkpoint; re-embed everything
   stats        Show index composition and on-disk size
@@ -147,10 +150,19 @@ async function listSessions() {
   return stamped.map((s) => s.file);
 }
 
-/** The plain text of one session, via the same extractor the index build uses. */
+/**
+ * The plain text of one session, via the same extractor the index build uses.
+ *
+ * Authoring tool calls are excluded here even though the index now keeps them:
+ * this feeds a card summariser, whose input is capped and whose job is to say what
+ * was decided, not to reproduce file bodies. The rule of thumb is worth stating —
+ * **the index remembers what was written, the cards remember what was decided** —
+ * because the two extract the same log and it is easy to let one drift into the
+ * other's purpose.
+ */
 async function sessionText(log) {
   const jsonl = await decompressZstdFile(log);
-  const { units } = extractUnits(jsonl, { includeToolResults: true });
+  const { units } = extractUnits(jsonl, { includeToolResults: true, includeToolCalls: false });
   return units.map((u) => u.text).join('\n\n');
 }
 
@@ -238,7 +250,7 @@ async function cmdBuild(args) {
 
   /** @type {Map<string, import('../lib/session-source.mjs').MemoryUnit>} */
   const byHash = new Map();
-  const totals = { records: 0, userUnits: 0, assistantUnits: 0, toolUnits: 0, toolSkipped: 0, deduped: 0, chars: 0, fillerSkipped: 0, unparsable: 0 };
+  const totals = { records: 0, userUnits: 0, assistantUnits: 0, toolUnits: 0, actionUnits: 0, toolSkipped: 0, deduped: 0, chars: 0, fillerSkipped: 0, unparsable: 0, authoringUnparsable: 0 };
   let read = 0;
 
   for (const log of logs) {
@@ -253,6 +265,7 @@ async function cmdBuild(args) {
     // not vary with the log's format version the way the embedded id does.
     const { units, stats } = extractUnits(jsonl, {
       includeToolResults: !args.noTool,
+      includeToolCalls: !args.noToolCalls,
       session: basename(dirname(log)),
     });
     for (const unit of units) if (!byHash.has(unit.hash)) byHash.set(unit.hash, unit);
@@ -274,16 +287,34 @@ async function cmdBuild(args) {
   // still self-contained (a unit carries its own text), but their `session#seq`
   // locator now points at a file that is gone, so injection must label them as
   // unverifiable rather than implying the original can be re-read.
+  //
+  // A category this run was explicitly told to skip is a different case: its
+  // session may be perfectly alive, so carrying it over as `orphaned` would tell
+  // the model its source is deleted when nothing of the sort happened. Measured
+  // before the distinction existed: `build --no-tool-calls` on an index holding one
+  // authoring unit printed "kept from sessions that no longer exist on disk" and
+  // tagged it `unverifiable (source deleted)`. Those units are dropped instead —
+  // which is what the flag means — and reported.
+  /** Roles this run was asked not to index. */
+  const excludedRoles = new Set();
+  if (args.noTool) excludedRoles.add('tool');
+  if (args.noToolCalls) excludedRoles.add('action');
   let orphaned = 0;
+  let excluded = 0;
   if (!args.fresh) {
     try {
       const previous = await readIndex(outDir);
       for (const unit of previous.data.units) {
         if (byHash.has(unit.hash)) continue;
+        if (excludedRoles.has(unit.role)) { excluded += 1; continue; }
         byHash.set(unit.hash, { ...unit, orphaned: true });
         orphaned += 1;
       }
     } catch { /* no previous index, or unreadable: nothing to carry over */ }
+  }
+  if (excluded > 0) {
+    console.log(`[skip] ${excluded} unit(s) dropped because this run excluded their category`
+      + ` (${[...excludedRoles].join(', ')}); a normal build brings them back`);
   }
   if (orphaned > 0) {
     console.warn(`[orphan] ${orphaned} units kept from sessions that no longer exist on disk`);
@@ -293,7 +324,7 @@ async function cmdBuild(args) {
   const units = [...byHash.values()].sort((a, b) => a.time - b.time);
   // Count roles from the final deduplicated set, not from per-log tallies:
   // identical text can occur in more than one log, so per-log sums overcount.
-  const roleCounts = { user: 0, assistant: 0, tool: 0 };
+  const roleCounts = { user: 0, assistant: 0, tool: 0, action: 0 };
   let chars = 0;
   for (const unit of units) {
     roleCounts[unit.role] = (roleCounts[unit.role] || 0) + 1;
@@ -301,9 +332,11 @@ async function cmdBuild(args) {
   }
   console.log(`[extract] ${units.length} unique units ` +
     `(user ${roleCounts.user}, assistant ${roleCounts.assistant}, tool ${roleCounts.tool}, ` +
+    `action ${roleCounts.action}, ` +
     `tool-skipped ${totals.toolSkipped}, deduped ${totals.deduped}, filler ${totals.fillerSkipped}, ` +
-    `unparsable ${totals.unparsable})`);
-  console.log(`  composition: ${totals.userUnits} user / ${totals.assistantUnits} assistant / ${totals.toolUnits} tool`);
+    `unparsable ${totals.unparsable}, call-unparsable ${totals.authoringUnparsable})`);
+  console.log(`  composition: ${totals.userUnits} user / ${totals.assistantUnits} assistant / `
+    + `${totals.toolUnits} tool / ${totals.actionUnits} authoring call`);
   console.log(`[extract] ${chars.toLocaleString()} chars`);
 
   console.log('[embed] embedding units…');
@@ -519,7 +552,7 @@ async function cmdBuild(args) {
 async function cmdStats(args) {
   const dir = args.out ? resolve(args.out) : defaultIndexDir();
   const index = await readIndex(dir);
-  const byRole = { user: 0, assistant: 0, tool: 0 };
+  const byRole = { user: 0, assistant: 0, tool: 0, action: 0 };
   let chars = 0;
   /** @type {Set<string>} */
   const sessions = new Set();
@@ -544,6 +577,7 @@ async function cmdStats(args) {
   console.log(`  user       ${byRole.user}`);
   console.log(`  assistant  ${byRole.assistant}`);
   console.log(`  tool       ${byRole.tool}`);
+  console.log(`  action     ${byRole.action}   (authoring tool calls: what a file held when it was written)`);
   console.log(`sessions     ${sessions.size}`);
   console.log(`chars        ${chars.toLocaleString()}`);
   // Report the space the directory actually consumes, not just the compressed

@@ -195,6 +195,32 @@ same cases went from a false negative and an empty completion to 24/24 correct
 with thinking disabled, at 1.4 s and 15 output tokens instead of 3.9 s and 59.
 Set `DSH_G_MEMORY_LLM_THINKING=on` if your endpoint rejects the extra field.
 
+## Forgetting
+
+A memory system that can only add becomes more wrong the more it remembers: a
+corrected fact sits beside its correction with equal confidence, and nothing can be
+withdrawn. Three states handle that, all derived rather than stored where possible:
+
+| state | how it arises | what retrieval does |
+|---|---|---|
+| `expired` | the card's `expires` date has passed | left out of injection; labelled when asked for |
+| `superseded` | a newer card named it in `supersedes` | left out of injection; labelled `superseded by <id>` |
+| `retired` | `memory_forget` withdrew it | left out of injection; kept as evidence |
+
+`memory_note` accepts `supersedes` (an id, an id prefix, or a distinctive fragment of
+the summary) and `expires` (`YYYY-MM-DD`). When a new memory closely resembles an
+existing one and no `supersedes` was given, the result reports the near-matches as
+`overlaps` — the system *offers* a replacement, it never guesses one, because two
+memories that merely resemble each other are not a correction and an automatic
+supersede would be unrecoverable.
+
+`memory_forget` withdraws a memory by id or by query. Retiring is the default and
+keeps the card as evidence; `hard: true` removes it from the store entirely.
+
+Injection sees only current memories. Explicit recall sees everything, labelled — a
+corrected fact arrives with its correction visible rather than masquerading as the
+latest word. Every transition is written to the decision log.
+
 ## Manual recall
 
 Memory is reachable three ways, and they are independent:
@@ -359,6 +385,26 @@ Environment:
 | `DSH_G_MEMORY_LIVE_BUDGET_MS` | `20000` | wall-clock budget per pass |
 | `DSH_G_MEMORY_CARD_MIN_SIMILARITY` | `0.35` | how similar a card must be to be admitted when no reranker is configured; `0` disables the rule |
 | `DSH_G_MEMORY_SYNTHESIS_MARGIN` | `0.2` | synthesise only when the top-two score gap is below this — i.e. when the entries must be assembled; `0` never synthesises and returns verbatim entries |
+
+## Evaluation
+
+Two labelled case sets, with different jobs:
+
+```bash
+npm run eval:calibration   # the regression gate: cases that pass today, 100% required
+npm run eval:challenge     # the measured frontier: cases that do not pass yet
+```
+
+`scripts/cases.calibration.json` is a gate — a curated set where every case must pass,
+checked against the local index through the real retrieval path. `scripts/cases.challenge.json`
+holds cases the system does **not** pass yet, across dimensions the gate does not cover
+(multi-fact composition, temporal ordering, and recall of the governance layer itself).
+They are kept as a tracked score rather than folded into the gate: a permanently red
+gate stops being read, and the point of these cases is to name the weakness precisely.
+
+A third file, `scripts/cases-personal.local.json`, is deliberately **not** in the
+repository: its cases quote the machine owner's own notes, and an evaluation does not
+need to ship them to be useful.
 
 ## Tests
 

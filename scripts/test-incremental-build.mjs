@@ -88,6 +88,19 @@ try {
   }
 
   if (first !== undefined) {
+    // A build must not report a degraded path it swallowed. `[resume] could not
+    // write the checkpoint tail: appendFile is not defined` printed here for a whole
+    // afternoon after an import was edited: the resume path is wrapped in a
+    // try/catch (so the build still succeeds) and nothing else ever exercised it,
+    // which is the exact shape of bug that survives a green suite.
+    const swallowed = /\[resume\] could not write|is not defined/.exec(first.stdout + first.stderr);
+    if (swallowed !== null) {
+      bad('the build runs without swallowing an error',
+        `it reported "${swallowed[0]}" — a degraded path is being hidden:\n${first.stdout}`);
+    } else {
+      ok('the build runs without swallowing an error');
+    }
+
     if (/reused 0 .*embedded [1-9]/.test(first.stdout) || /embedded ([1-9]\d*)/.test(first.stdout)) {
       ok('first build embeds the corpus and reuses nothing');
     } else {

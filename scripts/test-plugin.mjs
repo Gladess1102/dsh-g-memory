@@ -187,14 +187,43 @@ async function main() {
       assert.equal(plugin.name, 'dsh-g-memory');
     });
 
-    await check('registers the recall and note tools', () => {
-      // Two tools now: `memory_recall` reads, `memory_note` writes. The write
-      // path exists because a judgement formed mid-session had no route to a
-      // later session — the index is built after a session ends and
-      // consolidation is gated on idle time, so "nowhere to go" was literally
-      // true until this tool existed.
-      assert.equal(state.tools.length, 2);
-      assert.deepEqual(state.tools.map((t) => t.name).sort(), ['memory_note', 'memory_recall']);
+    await check('registers exactly the recall, note and forget tools', () => {
+      // Three tools: `memory_recall` reads, `memory_note` writes, `memory_forget`
+      // withdraws. The write path exists because a judgement formed mid-session had
+      // no route to a later session; the forget path exists because a memory system
+      // that can only add becomes more wrong the more it remembers — a corrected
+      // fact sat beside its correction with equal confidence.
+      //
+      // Asserted as an exact set on purpose: a tool that appears without a decision
+      // here is a surface the model can call and nothing has reviewed.
+      assert.equal(state.tools.length, 3);
+      assert.deepEqual(state.tools.map((t) => t.name).sort(), ['memory_forget', 'memory_note', 'memory_recall']);
+    });
+
+    const forgetTool = state.tools.find((t) => t.name === 'memory_forget');
+
+    await check('memory_forget declares a schema and cannot be a silent no-op', () => {
+      assert.equal(forgetTool.parameters.type, 'object');
+      assert.equal(forgetTool.parameters.additionalProperties, false);
+      assert.ok(forgetTool.parameters.properties.id, 'id is the precise way to name a card');
+      assert.ok(forgetTool.parameters.properties.query, 'query is the fallback when the id is unknown');
+      assert.equal(forgetTool.parameters.properties.hard.type, 'boolean');
+      // Neither is required: the tool resolves one of them, and says which memory it
+      // matched before anything changes.
+      assert.equal(forgetTool.parameters.required, undefined);
+      assert.ok(forgetTool.output.schema.properties.forgotten, 'forgotten must be reported');
+      assert.equal(forgetTool.output.schema.required.includes('forgotten'), true);
+      assert.equal(forgetTool.isConcurrencySafe(), false, 'a destructive tool is not concurrency-safe');
+    });
+
+    await check('memory_note exposes governance without becoming a delete tool', () => {
+      const note = state.tools.find((t) => t.name === 'memory_note');
+      assert.ok(note.parameters.properties.supersedes, 'supersedes lets a correction replace what it corrects');
+      assert.ok(note.parameters.properties.expires, 'expires lets a status lapse on its own');
+      const declared = Object.keys(note.output.schema.properties);
+      for (const field of ['duplicate', 'superseded', 'supersedeFailed', 'overlaps']) {
+        assert.ok(declared.includes(field), `${field} is returned and must be declared, or the boundary drops it`);
+      }
     });
 
     const tool = state.tools.find((t) => t.name === 'memory_recall');

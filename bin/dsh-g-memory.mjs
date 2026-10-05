@@ -12,7 +12,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { open, readdir, stat, readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises';
+import { appendFile, open, readdir, stat, readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 
 /**

@@ -19,3 +19,4 @@ stats.jsonl
 # Local evaluation output
 eval-*.json
 cases-*.local.json
+cases.local.json

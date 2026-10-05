@@ -35,11 +35,22 @@ const check = async (name, fn) => {
 /** A summary long enough to pass parseCard's 30-character floor. */
 const SUMMARY = '这条会话判断的核心结论是：嵌入模型换成 Gemma 之后，索引必须整体重建而不能复用旧向量。';
 const mode = { value: 'ok' };
+/**
+ * How many times the loop embedded through this stub.
+ *
+ * Asserted, not just counted, because the alternative is invisible: with the
+ * embedding configuration read once at import, the loop below embedded through the
+ * *real* 11439 instead — which succeeds on a developer machine that has the model
+ * running, so the check passed there and failed on CI with "expected one card,
+ * got 0". A guard that only holds on machines without the model is not a guard.
+ */
+const embedCalls = { count: 0 };
 
 const server = createServer((req, res) => {
   // The loop below runs the real `distill`, which embeds the card it wrote — so the
   // stub answers the embedding route too, and the whole path stays hermetic.
   if (req.url?.includes('/embeddings')) {
+    embedCalls.count += 1;
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ data: [{ embedding: Array.from({ length: 8 }, (_, i) => (i + 1) / 10) }] }));
     return;
@@ -259,6 +270,8 @@ await check('every early return leaves a receipt', async () => {
     await new Promise((resolve) => setTimeout(resolve, 600)); // several ticks
 
     await check('the loop distils a finished session into a card', async () => {
+      assert.ok(embedCalls.count > 0,
+        'the loop must have embedded through this stub: an embedding configuration frozen at import time sends it to the real 11439 instead, which only passes on a machine running the model');
       const cards = await readCards(join(loopHome, 'dsh-g-memory', 'cards.ndjson'));
       // A failure has to name the reason, not just the count: `distill` records one
       // `consolidate-result` per attempt carrying the reason it did not store.

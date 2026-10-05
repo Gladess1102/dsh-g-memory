@@ -1,6 +1,6 @@
 {
   "name": "dsh-g-memory",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Cross-session semantic memory for DeepSeek Harness: indexes session history locally with EmbeddingGemma-300M embeddings and recalls relevant past context, injecting it as clearly-framed untrusted context. No runtime dependencies, no service to run, synthesis opt-in.",
   "keywords": [
     "deepseek-harness",

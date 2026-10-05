@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.9.1 — 2026-10-06
+
+**CI 抓到一个我自己藏起来的缺陷：新写的蒸馏循环测试不是 hermetic 的。** 同一份提交在 macOS 上全绿，在 Ubuntu / Node 20 上 `expected one card, got 0`。第一次失败只说"0 张卡"，所以先补可观测性，再顺着它找到真因。
+
+### Found — 循环测试连的是真模型，不是那个 stub
+
+`embedder.mjs` 里 `DEFAULT_EMBED_CONFIG` 是**模块加载时求值**的常量：
+
+```js
+export const DEFAULT_EMBED_CONFIG = { url: process.env.DSH_G_MEMORY_EMBED_URL || 'http://127.0.0.1:11439', … };
+```
+
+测试在第 206 行才把 `DSH_G_MEMORY_EMBED_URL` 指向自己的 stub，而第 24 行的 import 早已把 URL 冻成真实的 `127.0.0.1:11439`：
+
+| 环境 | 现象 | 真因 |
+|---|---|---|
+| 开发机 | ✅ 通过 | 11439 上真的跑着 embed-gemma：循环连到**真模型**、拿到真向量、卡片照写不误 |
+| CI | ❌ 0 张卡、3 次到重试上限 | 11439 无人监听 → `unreachable`（可重试）→ 3 次后放弃 |
+
+README 承诺的 "no network, no models" 被这个测试自己破坏了：它在**恰好装了模型的机器**上通过。这类"只在本机成立"的检查比没有检查更糟——它给绿灯。
+
+### Fixed
+
+- `resolveConfig()` 改为**每次调用读环境**（新的 `defaultEmbedConfig()`）。那个"名字听起来是活的、实际是快照"的 `DEFAULT_EMBED_CONFIG` 常量被移除（模块外无人引用它）。
+- 循环测试的 stub 现在统计 `/embeddings` 请求数，并**断言它大于 0**：循环必须走 stub。变异测试（把配置改回"首次调用时冻结"）确认这条守卫会失败——**在开发机上也会失败**，而旧的"卡片数量"断言在本机永远抓不到。
+- 保留上一次提交补的可观测性：用 `transcriptFor` 的同一表达式发现夹具、断言 200 字符下限、把 `consolidate-result` 的 `reason` 写进失败消息。正是它把"0 张卡"缩小到了嵌入这一步。
+
+### Known — 同一形状还有两处（本轮未改）
+
+`DEFAULT_RERANK`（`rerank.mjs`）与 `DEFAULT_SYNTHESIS`（`synthesize.mjs`）同样是模块级读环境变量。它们在生产里由配置显式传入，且其常量被测试当作**值**使用（`test-plugin.mjs` 断言 `resolved.minScore === DEFAULT_RERANK.minScore`；`test-synthesis.mjs` 用 `DEFAULT_SYNTHESIS.baseUrl` 决定是否跳过实网部分）。记录在案，改动面与风险另行评估，不混进这次修复。
+
 ## 0.9.0 — 2026-10-06
 
 **本轮的主题不是新功能，而是"一个说自己完成了、其实从没跑过的层"。** 耐久卡片（consolidation → cards）是 0.4 起就宣称的能力，实测**在生产里一次都没跑成**，而且沿途三个缺陷每一个都足以单独让它静默；同一轮里增量索引还有一处"把丢弃的单元标记为已处理"的水位错误。修完之后才做了 0.8.0 记录在案的那个结构性缺口（索引不收 tool 参数）。

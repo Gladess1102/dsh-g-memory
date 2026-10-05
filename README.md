@@ -481,7 +481,7 @@ need to ship them to be useful.
 ## Tests
 
 ```bash
-npm test            # the full chain: 12 stages, 210 checks, no network, no models
+npm test            # the full chain: 12 stages, 215 checks, no network, no models
 npm run test:strict # same, but every skip counts as a failure (release check)
 ```
 

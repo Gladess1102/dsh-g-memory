@@ -121,11 +121,47 @@ await check('only the events past the watermark are indexed', async () => {
   assert.deepEqual(index.data.units.map((u) => u.seq).sort((a, b) => a - b), [1, 2, 3]);
 });
 
+await check('the watermark decides how much is read, not which units exist', async () => {
+  // `fromSeq` is invisible in the observable result unless something is *missing*:
+  // re-reading the whole log instead of only the events past the watermark produces
+  // the same set of units, because everything old is deduplicated by hash. So the
+  // assertion has to make a unit missing first. With `fromSeq` ignored, the pass
+  // re-reads the first event and quietly puts it back; with it honoured, the index
+  // keeps only what the watermark covers plus what is new.
+  const wmDir = join(dir, 'watermark-index');
+  const wmHome = join(dir, 'watermark-home');
+  const wmSession = join(wmHome, 'sessions', '--tmp--', 'session-wm');
+  await mkdir(wmSession, { recursive: true });
+  await mkdir(wmDir, { recursive: true });
+  const wmLog = join(wmSession, 'session.v4.jsonl');
+  await writeFile(wmLog, `${[JSON.stringify({ type: 'session', id: 'wm' }),
+    event('user/message', 1, sentence('wm-1')),
+    event('user/message', 2, sentence('wm-2'))].join('\n')}\n`);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await writeIndex(wmDir, new MemoryIndex({ version: 1, dim: DIM, model: MODEL, builtAt: Date.now() - 60_000, units: [] }));
+  const live = new LiveIndex(
+    { on: () => () => {}, logger: { debug: () => {}, warn: () => {} } },
+    { indexDir: wmDir, home: wmHome, embed: { model: MODEL }, embedFn: stubEmbed, liveIndex: { quietMs: 0 } },
+  );
+  await live.runOnce();
+  const first = await readIndex(wmDir);
+  assert.equal(first.size, 2, 'the two events index');
+  const kept = first.data.units.find((u) => u.seq === 2);
+  await writeIndex(wmDir, new MemoryIndex({ ...first.data, units: [kept] }));
+
+  // A new event arrives, so the log is re-read from the watermark (seq 2).
+  await appendFile(wmLog, `${event('user/message', 3, sentence('wm-3'))}\n`);
+  const pass = await live.runOnce();
+  assert.equal(pass.units, 1, `only the new event may be taken, got ${pass.units}`);
+  const after = await readIndex(wmDir);
+  assert.equal(after.size, 2, 'the unit that was removed stays removed: the watermark is past its event');
+  assert.deepEqual(after.data.units.map((u) => u.seq).sort((a, b) => a - b), [2, 3]);
+});
+
 await check('a re-read never duplicates a unit', async () => {
   // `force` ignores both the mtime and the quiet window, so the whole log is
   // re-parsed: hash dedup is what keeps the index a set rather than a log.
-  const live = makeLive();
-  const result = await live.runOnce({ force: true });
+  const live = makeLive();  const result = await live.runOnce({ force: true });
   assert.equal(result.units, 0, 'every unit was already known');
   assert.equal((await readIndex(indexDir)).size, 3);
 });

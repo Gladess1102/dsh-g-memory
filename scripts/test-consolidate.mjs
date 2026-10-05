@@ -23,6 +23,8 @@ import { readCards } from '../lib/cards.mjs';
 import { l2Normalize } from '../lib/vector.mjs';
 import { AutoRecall } from '../lib/auto-recall.mjs';
 import { MemoryIndex, writeIndex } from '../lib/store.mjs';
+import { listSessionLogs } from '../lib/live-index.mjs';
+import { extractUnits } from '../lib/session-source.mjs';
 
 let failures = 0;
 const check = async (name, fn) => {
@@ -227,6 +229,25 @@ await check('every early return leaves a receipt', async () => {
 
   recall.attach();
   try {
+    // The two observables the loop depends on, asserted from the outside before the
+    // loop is allowed to fail on them. This exists because the first CI run of the
+    // check below failed on Ubuntu while macOS passed, and all it said was
+    // "expected one card, got 0" — naming neither the step nor the reason. Both
+    // expressions mirror `transcriptFor` exactly, so a failure here localises the
+    // problem to discovery or to the 200-character floor instead of leaving it to
+    // the model, the endpoint, or the store.
+    await check('the loop can discover the fixture the way transcriptFor does', async () => {
+      const logs = await listSessionLogs(join(loopHome, 'sessions'));
+      assert.ok(logs.some((file) => file.includes('loop-session')),
+        `discoverable logs: ${JSON.stringify(logs)}`);
+    });
+
+    await check('the fixture transcript clears the 200-character floor', async () => {
+      const jsonl = await readFile(join(sessionDir, 'session.v4.jsonl'), 'utf8');
+      const { units } = extractUnits(jsonl, { includeToolResults: false, includeToolCalls: false });
+      const text = units.map((u) => u.text).join('\n\n');
+      assert.ok(text.length >= 200, `transcript is ${text.length} characters`);
+    });
     // One user turn arms the tracker. Injection stays at its default mode, so the
     // listener reaches `note()` — the gate that keeps a session out of `note()` is
     // the reason this has to be a real inbox event rather than a direct call.
@@ -239,7 +260,11 @@ await check('every early return leaves a receipt', async () => {
 
     await check('the loop distils a finished session into a card', async () => {
       const cards = await readCards(join(loopHome, 'dsh-g-memory', 'cards.ndjson'));
-      assert.equal(cards.length, 1, `expected one card, got ${cards.length}`);
+      // A failure has to name the reason, not just the count: `distill` records one
+      // `consolidate-result` per attempt carrying the reason it did not store.
+      const outcomes = JSON.stringify((await telemetry())
+        .filter((e) => e.event.startsWith('consolidate')));
+      assert.equal(cards.length, 1, `expected one card, got ${cards.length}; attempts: ${outcomes}`);
       assert.match(cards[0].summary, /嵌入模型换成 Gemma/, 'the card carries what the model returned');
       assert.equal(cards[0].session, 'loop-session', 'and it names the session it came from');
       const receipts = (await readFile(join(loopHome, 'dsh-g-memory', 'receipts.ndjson'), 'utf8'))

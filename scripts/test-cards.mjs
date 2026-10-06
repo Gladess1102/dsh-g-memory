@@ -243,5 +243,53 @@ await check('the quality filter only drops text that cannot carry a fact', () =>
   }
 });
 
+await check('a summary is cut at a sentence boundary, not mid-word', () => {
+  const sentence = '这是一条足够长的记忆句子，用来把正文推到上限之外。';
+  const c = parseCard(sentence.repeat(40), { session: 's-cut' });
+  assert.ok(c.summary.length <= 600, 'summary must fit the cap, got ' + c.summary.length);
+  assert.ok(c.summary.endsWith('…'), 'a truncated summary must say so');
+  assert.ok(/[。！？\n]…$/.test(c.summary), 'must cut at a boundary, got: ' + c.summary.slice(-14));
+});
+
+await check('a summary that fits is stored without an ellipsis', () => {
+  const c = parseCard('端口是 11435，嵌入模型换成 EmbeddingGemma-300M，体积减半。', { session: 's-short' });
+  assert.ok(!c.summary.endsWith('…'), 'nothing was cut, so nothing may look cut');
+});
+
+await check('a model meta prelude is not stored as memory', () => {
+  const c = parseCard('以下是会话原文的提炼总结：\n\n记忆系统的压缩比实测为 5.95 倍，36 个日志共 31.7 MB。', { session: 's-pre' });
+  assert.ok(!c.summary.includes('以下是'), 'prelude leaked: ' + c.summary.slice(0, 30));
+  assert.ok(c.summary.startsWith('记忆系统的压缩比'), 'got: ' + c.summary.slice(0, 20));
+});
+
+await check('a whole meta sentence is dropped too (observed shape)', () => {
+  const body = '根据提供的会话原文，我需要提炼出关于 DSH-g-memory 插件的工作区建立与状态信息。以下是事实、判断、未决问题及标签的整理：\n\n(a) 事实：\n三个主对话已迁入 dsh-g-memory 工作区，共 16 个会话。';
+  const c = parseCard(body, { session: 's-pre2' });
+  assert.ok(c.summary.startsWith('(a) 事实'), 'got: ' + c.summary.slice(0, 24));
+});
+
+await check('an opener before the prelude does not save it', () => {
+  const c = parseCard('好的，以下是提炼的摘要：\n\n端口是 11435，嵌入模型换成 EmbeddingGemma-300M，体积减半。', { session: 's-pre3' });
+  assert.ok(!c.summary.includes('以下是'), 'got: ' + c.summary.slice(0, 24));
+  assert.ok(c.summary.startsWith('端口是 11435'), 'got: ' + c.summary.slice(0, 24));
+});
+
+await check('commentary about the transcript is not stored as memory', () => {
+  const body = '原文描述了 DSH 工作区的自动维护任务，包括工作区转移、插件审计、CI 测试状态等。'
+    + '原文中提到了一些执行指令，如"Find what the CLI wrote"、"Change tack"等。'
+    + '但原文中提到的指令需要执行，我会据此进行操作。';
+  assert.equal(parseCard(body, { session: 's-meta2' }), null);
+  // 反向：真卡片不能被这条闸门误杀
+  assert.ok(parseCard('工作区转移已完成：3 个主对话迁入 dsh-g-memory，共 16 个会话；原目录保留备份可回滚。', { session: 's-ok' }) !== null);
+});
+
+await check('a distilled card records its model and the window it covers', () => {
+  const c = parseCard('端口是 11435，嵌入模型换成 EmbeddingGemma-300M，体积减半。',
+    { session: 's-meta', model: 'MiniCPM5-2B-MLX', coveredFrom: 111, coveredTo: 222 });
+  assert.equal(c.model, 'MiniCPM5-2B-MLX');
+  assert.equal(c.coveredFrom, 111);
+  assert.equal(c.coveredTo, 222);
+});
+
 console.log(`\n${pass}/${pass + fail} checks passed`);
 process.exitCode = fail === 0 ? 0 : 1;

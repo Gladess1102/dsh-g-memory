@@ -18,7 +18,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
-import { consolidateSession } from '../lib/consolidate.mjs';
+import { consolidateSession, tailWindow, CONSOLIDATION_SYSTEM } from '../lib/consolidate.mjs';
 import { readCards } from '../lib/cards.mjs';
 import { l2Normalize } from '../lib/vector.mjs';
 import { AutoRecall } from '../lib/auto-recall.mjs';
@@ -332,6 +332,27 @@ await check('every early return leaves a receipt', async () => {
     await rm(loopHome, { recursive: true, force: true });
   }
 }
+
+// ── the excerpt window ───────────────────────────────────────────────────────
+await check('the excerpt keeps the most recent material, not the oldest', async () => {
+  const text = 'OLDEST-MARKER' + 'x'.repeat(400) + '\n' + 'NEWEST-MARKER';
+  const { text: window, truncated } = tailWindow(text, 200);
+  assert.ok(window.includes('NEWEST-MARKER'), 'the tail must survive');
+  assert.ok(!window.includes('OLDEST-MARKER'), 'the head is what gets dropped');
+  assert.ok(truncated, 'a cut window says so');
+});
+
+await check('a transcript that fits is passed through whole', async () => {
+  const { text: window, truncated } = tailWindow('short transcript', 1000);
+  assert.equal(window, 'short transcript');
+  assert.equal(truncated, false);
+});
+
+await check('the prompt forbids a prelude and demands a time point for state claims', async () => {
+  assert.match(CONSOLIDATION_SYSTEM, /直接以事实开头/);
+  assert.match(CONSOLIDATION_SYSTEM, /带上时间点/);
+  assert.match(CONSOLIDATION_SYSTEM, /Tag: /);
+});
 
 server.close();
 await rm(dir, { recursive: true, force: true });

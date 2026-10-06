@@ -102,6 +102,14 @@ for (const [env, value, read] of cases) {
   });
 }
 
+await check('DSH_G_MEMORY_LLM_HEADERS carries gateway headers as JSON', () => {
+  const got = withEnv('DSH_G_MEMORY_LLM_HEADERS', '{"x-opencode-session":"abc123"}', () => defaultSynthesisConfig().headers);
+  assert.deepEqual(got, { 'x-opencode-session': 'abc123' });
+  assert.deepEqual(withEnv('DSH_G_MEMORY_LLM_HEADERS', 'not json', () => defaultSynthesisConfig().headers), {},
+    'a malformed value is dropped, not fatal');
+  assert.deepEqual(withEnv('DSH_G_MEMORY_LLM_HEADERS', undefined, () => defaultSynthesisConfig().headers), {});
+});
+
 await check('DSH_G_MEMORY_CONSOLIDATE=on enables the loop, and anything else leaves it off', () => {
   assert.equal(withEnv('DSH_G_MEMORY_CONSOLIDATE', 'on', () => defaultConsolidationConfig().enabled), true);
   assert.equal(withEnv('DSH_G_MEMORY_CONSOLIDATE', 'off', () => defaultConsolidationConfig().enabled), false);

@@ -342,6 +342,8 @@ All optional; defaults suit a single-machine setup.
 | `DSH_G_MEMORY_AUTO_CANDIDATES` | `8` | Candidate pool depth handed to synthesis. |
 | `DSH_G_MEMORY_SYNTHESIS_MAX_CHARS` | `1200` | Synthesis output cap. |
 | `DSH_G_MEMORY_LLM_TIMEOUT_MS` | `60000` | Synthesis request timeout. |
+| `DSH_G_MEMORY_LLM_KEY_NAME` | `OPENCODE_GO_API_KEY` | Credential to look up for a non-loopback endpoint (env, else `$DSH_HOME/.credentials.yaml`). |
+| `DSH_G_MEMORY_LLM_HEADERS` | *(unset)* | Extra request headers as JSON. opencode-go answers `400 MissingSessionID` without `x-opencode-session`. |
 | `DSH_G_MEMORY_AUTO_STATS` | *(unset)* | Path to a JSONL decision log: one line per gate, injection, skip and failed recall. `scripts/telemetry-report.mjs` reads it. Unset means no telemetry. |
 | `DSH_G_MEMORY_RERANK_KEY` | — | Bearer token for the reranker, if it needs one. |
 | `DSH_G_MEMORY_RERANK_PATH` | `/v1/rerank` | Reranker route, for servers that do not use the default. |
@@ -486,7 +488,7 @@ need to ship them to be useful.
 ## Tests
 
 ```bash
-npm test            # the full chain: 14 stages, 255 checks, no network, no models
+npm test            # the full chain: 14 stages, 259 checks, no network, no models
 npm run test:strict # same, but every skip counts as a failure (release check)
 ```
 

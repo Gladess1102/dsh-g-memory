@@ -35,7 +35,7 @@ import { embedAdaptive, embedBatch, probe, resolveConfig } from '../lib/embedder
 import { l2Normalize, quantizeInt8, packVector } from '../lib/vector.mjs';
 import { findSchemaValidator } from '../lib/harness.mjs';
 import { parseCard, readCards, writeCards, withVector, formatCard, tagIndex, defaultCardPath } from '../lib/cards.mjs';
-import { defaultSynthesisConfig, redact } from '../lib/synthesize.mjs';
+import { chatHeaders, defaultSynthesisConfig, noThinkingFields, redact } from '../lib/synthesize.mjs';
 import { CONSOLIDATION_SYSTEM, tailWindow } from '../lib/consolidate.mjs';
 import {
   INDEX_VERSION, MemoryIndex, defaultIndexDir, readIndex, writeIndex, prepareQueryVector,
@@ -119,14 +119,24 @@ function usage() {
 /** Recursively collect session log paths under a root. */
 
 
-/** One card-writing call. Returns the payload and the text; never throws. */
-async function askModel(baseUrl, model, system, user) {
+/**
+ * One card-writing call. Returns the payload and the text; never throws.
+ *
+ * Auth and the reasoning switches come from the shared helpers, so this command and the
+ * plugin's own loop agree on what a model request looks like.
+ */
+async function askModel(baseUrl, model, system, user, config = {}) {
+  const auth = await chatHeaders(config, baseUrl);
+  if (auth.error) {
+    console.error('     ' + auth.error);
+    return { payload: null, text: '' };
+  }
   try {
-    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const res = await fetch(baseUrl.replace(/\/$/, '') + '/chat/completions', {
+      method: 'POST', headers: auth.headers,
       body: JSON.stringify({
         model, temperature: 0.7, top_p: 0.95,
-        chat_template_kwargs: { enable_thinking: false },
+        ...noThinkingFields(config.thinking),
         max_tokens: 1200,
         messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
       }),
@@ -772,7 +782,9 @@ async function cmdDistill(args) {
       // nothing usable for a session that is merely unlucky. Trying a smaller context
       // does not help when the failure is sampling noise rather than context length.
       for (let sample = 0; sample < 2 && payload === null; sample += 1) {
-        const attempt = await askModel(baseUrl, model, CONSOLIDATION_SYSTEM, framing + tailWindow(evidence, budget).text + directive);
+        const attempt = await askModel(
+          baseUrl, model, CONSOLIDATION_SYSTEM, framing + tailWindow(evidence, budget).text + directive, synthesisDefaults,
+        );
         if (attempt.text.trim() !== '') { payload = attempt.payload; break; }
       }
       if (payload !== null) break;

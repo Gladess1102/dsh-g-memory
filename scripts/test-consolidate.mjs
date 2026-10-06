@@ -45,6 +45,8 @@ const mode = { value: 'ok' };
  * got 0". A guard that only holds on machines without the model is not a guard.
  */
 const embedCalls = { count: 0 };
+/** The last card-writing request, so the shape the endpoint receives can be asserted. */
+const lastRequest = { body: null, headers: null };
 
 const server = createServer((req, res) => {
   // The loop below runs the real `distill`, which embeds the card it wrote — so the
@@ -57,6 +59,16 @@ const server = createServer((req, res) => {
   }
   if (mode.value === 'http500') { res.writeHead(500, { 'content-type': 'text/plain' }); res.end('upstream exploded'); return; }
   if (mode.value === 'empty') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ choices: [{ message: { content: '' } }] })); return; }
+  // Capture after the failure modes: they must keep failing for their own tests.
+  let raw = '';
+  req.on('data', (d) => { raw += d; });
+  req.on('end', () => {
+    lastRequest.headers = req.headers;
+    try { lastRequest.body = JSON.parse(raw); } catch { lastRequest.body = null; }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { content: SUMMARY } }] }));
+  });
+  return;
   res.writeHead(200, { 'content-type': 'application/json' });
   res.end(JSON.stringify({ choices: [{ message: { content: SUMMARY } }] }));
 });
@@ -332,6 +344,37 @@ await check('every early return leaves a receipt', async () => {
     await rm(loopHome, { recursive: true, force: true });
   }
 }
+
+// ── the request shape ────────────────────────────────────────────────────────
+await check('a card is requested with both reasoning switches off', async () => {
+  assert.ok(lastRequest.body, 'the stub saw a request');
+  assert.deepEqual(lastRequest.body.thinking, { type: 'disabled' },
+    'a DeepSeek-shaped gateway spends the whole budget on reasoning without this');
+  assert.deepEqual(lastRequest.body.chat_template_kwargs, { enable_thinking: false },
+    'a Qwen-shaped template needs the other one');
+});
+
+await check('thinking: true sends neither switch', async () => {
+  const { noThinkingFields } = await import('../lib/synthesize.mjs');
+  assert.deepEqual(noThinkingFields(true), {});
+  assert.deepEqual(noThinkingFields(false), {
+    chat_template_kwargs: { enable_thinking: false },
+    thinking: { type: 'disabled' },
+  });
+});
+
+await check('auth headers carry a credential, and ask for none on loopback', async () => {
+  const { chatHeaders } = await import('../lib/synthesize.mjs');
+  const remote = await chatHeaders({ apiKeyName: 'UNSET_KEY_FOR_TEST', headers: { 'x-gw': '1' } }, 'https://example.invalid/v1', 'sk-test');
+  assert.equal(remote.error, null);
+  assert.equal(remote.headers.Authorization, 'Bearer sk-test');
+  assert.equal(remote.headers['x-gw'], '1');
+  const missing = await chatHeaders({ apiKeyName: 'UNSET_KEY_FOR_TEST' }, 'https://example.invalid/v1');
+  assert.match(String(missing.error), /no API key/);
+  const local = await chatHeaders({ apiKeyName: 'UNSET_KEY_FOR_TEST' }, 'http://127.0.0.1:9/v1');
+  assert.equal(local.error, null, 'a locally served model needs no credential');
+  assert.equal(local.headers.Authorization, undefined);
+});
 
 // ── the excerpt window ───────────────────────────────────────────────────────
 await check('the excerpt keeps the most recent material, not the oldest', async () => {

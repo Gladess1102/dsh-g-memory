@@ -250,6 +250,11 @@ supersede would be unrecoverable.
 `memory_forget` withdraws a memory by id or by query. Retiring is the default and
 keeps the card as evidence; `hard: true` removes it from the store entirely.
 
+None of the three states arises by itself: they appear once a `memory_note` actually
+carries `expires` or `supersedes`, or once `memory_forget` is called. A store of
+hand-written notes therefore shows every card as active, which is the honest reading —
+the rules themselves are covered by `scripts/test-governance.mjs`.
+
 Cards also come from sessions, not only from `memory_note`: after a session has been
 idle and enough material has accumulated, the consolidation pass distils it into one
 card. That pass is **off by default** because it spends model calls — enable it with
@@ -481,7 +486,7 @@ need to ship them to be useful.
 ## Tests
 
 ```bash
-npm test            # the full chain: 12 stages, 217 checks, no network, no models
+npm test            # the full chain: 14 stages, 244 checks, no network, no models
 npm run test:strict # same, but every skip counts as a failure (release check)
 ```
 

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.9.2 — 2026-10-07
+
+**自检后的五项修复：发布门禁不再依赖手工环境变量，配置改在调用时读，`apply()` 从 686 行降到 275 行，清掉死导出。**
+
+### Fixed — `test:strict` 在本机必然 exit 1
+
+门禁把 skip 计为失败，而两条 live 检查都会因为"这个 shell 没 export 变量"而 skip：`/recall` 缺 `DSH_G_MEMORY_RERANK_URL`（可 11436 上的 reranker 明明在跑），注入形状检查借生产语料（索引里恰好不匹配就 30 秒超时）。
+
+- `/recall` 先探测部署文档写明的本地 11436；探到就设 `DSH_G_MEMORY_RERANK_URL`，探不到仍然诚实 skip。
+- 注入形状检查改为 hermetic：内置 stub 嵌入端点 + 单条 fixture 索引，超时从 skip 改成**失败**——夹具在，结论就是这个代码的属性，不是语料的属性。
+- 结果：`npm run test:strict` → **53/53、0 skip、exit 0**。
+
+### Fixed — 六处"模块级 env 快照"（0.9.1 Known 段落记的那批）
+
+0.9.1 只修了 `embedder.mjs`；`rerank` / `synthesize` / `consolidate` / `live-index` / `cache` / `auto-recall` 仍是**模块加载时求值**的常量，import 之后再改 `process.env` 一律不生效——同一个形状的缺陷，只是还没咬人。六者现在都是 `defaultXConfig()` 工厂，`resolveXConfig()` 每次调用重新读环境；`DEFAULT_RERANK_MIN_SCORE` 折叠进工厂并删除。
+
+### Changed — `lib/index.js` 的 `apply()` 686 → 275 行
+
+三个工具定义搬进 `lib/tools.mjs`：`createRecallTool({ maxResults, previewChars, retrieve })`、`createNoteTool({ ctx, embed })`、`createForgetTool({ ctx, embed })`——每个只接收它闭包真正用到的依赖。纯搬运，行为不变（218 项既有检查全绿）。`index.js` 814 → 388 行。
+
+### Removed — 死导出与孤儿导入
+
+`CONFIG_FIELDS`、`CARD_STATES`、`hasProgress`、`lockPathFor` 全仓库零引用，删除；`live-index.mjs` 因此闲置的 `existsSync` 导入一并清掉。
+
+### Added — `scripts/test-config-env.mjs`（23 项）
+
+把上面第二条钉死：六个默认值必须是**函数**（常量不可能响应 import 之后的环境变化，形状本身就是守卫），且每个文档化的 `DSH_G_MEMORY_*` 都要真的移动它声称的字段（默认值 + 覆盖值两条）。全链现在 **14 阶段 / 244 项检查**。
+
 ## 0.9.1 — 2026-10-06
 
 **CI 抓到一个我自己藏起来的缺陷：新写的蒸馏循环测试不是 hermetic 的。** 同一份提交在 macOS 上全绿，在 Ubuntu / Node 20 上 `expected one card, got 0`。第一次失败只说"0 张卡"，所以先补可观测性，再顺着它找到真因。

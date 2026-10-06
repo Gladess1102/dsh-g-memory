@@ -16,7 +16,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { synthesize, resolveApiKey, redact, DEFAULT_SYNTHESIS } from '../lib/synthesize.mjs';
+import { synthesize, resolveApiKey, redact, defaultSynthesisConfig } from '../lib/synthesize.mjs';
 import { readIndex, defaultIndexDir, prepareQueryVector } from '../lib/store.mjs';
 import { embedBatch, resolveConfig } from '../lib/embedder.mjs';
 
@@ -39,14 +39,15 @@ console.log('─'.repeat(70));
 console.log('synthesis smoke test');
 console.log('─'.repeat(70));
 
-if (!String(DEFAULT_SYNTHESIS.baseUrl || '').trim()) {
+const synthesisDefaults = defaultSynthesisConfig();
+if (!String(synthesisDefaults.baseUrl || '').trim()) {
   console.error('DSH_G_MEMORY_LLM_URL is not set, so synthesis is disabled by design.');
   console.error('Set it to an endpoint you are willing to send session text to, then re-run.');
   process.exitCode = 1;
   process.exit();
 }
-console.log(`endpoint: ${DEFAULT_SYNTHESIS.baseUrl}`);
-console.log(`model:    ${DEFAULT_SYNTHESIS.model}`);
+console.log(`endpoint: ${synthesisDefaults.baseUrl}`);
+console.log(`model:    ${synthesisDefaults.model}`);
 
 const key = await resolveApiKey('OPENCODE_GO_API_KEY');
 // The length is enough to tell "found" from "not found". Never print any part of

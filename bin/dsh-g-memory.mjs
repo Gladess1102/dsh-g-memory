@@ -35,7 +35,7 @@ import { embedAdaptive, embedBatch, probe, resolveConfig } from '../lib/embedder
 import { l2Normalize, quantizeInt8, packVector } from '../lib/vector.mjs';
 import { findSchemaValidator } from '../lib/harness.mjs';
 import { parseCard, readCards, writeCards, withVector, formatCard, tagIndex, defaultCardPath } from '../lib/cards.mjs';
-import { DEFAULT_SYNTHESIS } from '../lib/synthesize.mjs';
+import { defaultSynthesisConfig } from '../lib/synthesize.mjs';
 import {
   INDEX_VERSION, MemoryIndex, defaultIndexDir, readIndex, writeIndex, prepareQueryVector,
 } from '../lib/store.mjs';
@@ -729,8 +729,9 @@ const command = args._.shift();
  */
 async function cmdDistill(args) {
   const limit = Number(args.recent ?? 1);
-  const model = args.model || DEFAULT_SYNTHESIS.model;
-  const baseUrl = args.url || DEFAULT_SYNTHESIS.baseUrl;
+  const synthesisDefaults = defaultSynthesisConfig();
+  const model = args.model || synthesisDefaults.model;
+  const baseUrl = args.url || synthesisDefaults.baseUrl;
   if (!baseUrl) {
     console.error('distill: no synthesis endpoint configured (set DSH_G_MEMORY_LLM_URL or pass --url)');
     process.exitCode = 1; return;

@@ -14,17 +14,19 @@
  */
 
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { defaultIndexDir } from '../lib/store.mjs';
+import { createServer } from 'node:http';
+import { defaultIndexDir, MemoryIndex, writeIndex } from '../lib/store.mjs';
+import { l2Normalize, quantizeInt8, packVector } from '../lib/vector.mjs';
 import { AutoRecall } from '../lib/auto-recall.mjs';
 import { selectForInjection } from '../lib/inject.mjs';
-import { resolveRerankConfig, DEFAULT_RERANK } from '../lib/rerank.mjs';
+import { resolveRerankConfig, defaultRerankConfig } from '../lib/rerank.mjs';
 import { isRefusal, buildSynthesisPrompt, NO_MEMORY_SENTINEL } from '../lib/synthesize.mjs';
 // Namespace import, not a default import: the Loader resolves a plugin to
 // `exports.default ?? exports`, so this module must export NO default — a
@@ -37,6 +39,85 @@ import { decompressZstdFile, extractUnits, renderAuthoringCall } from '../lib/se
 // DSH_G_MEMORY_AUTO_STATS, and a simulated failure that lands in the real telemetry
 // looks exactly like a production failure. Point it at a temp file for this process.
 process.env.DSH_G_MEMORY_AUTO_STATS = join(await mkdtemp(join(tmpdir(), 'gm-stats-')), 'stats.jsonl');
+/**
+ * Use the configured reranker, or the deployment's documented local sidecar.
+ *
+ * A skip counts as a failure under --strict, and "this shell did not export a
+ * variable" is not a property of the code under test: the deployment runs the
+ * reranker on a documented local port. So detect it, and keep the honest skip
+ * for a machine that genuinely has no reranker.
+ *
+ * @returns {Promise<string>} the endpoint, or an empty string when unavailable.
+ */
+async function detectLocalReranker() {
+  const configured = String(process.env.DSH_G_MEMORY_RERANK_URL ?? '').trim();
+  if (configured !== '') return configured;
+  const candidate = 'http://127.0.0.1:11436';
+  try {
+    const res = await fetch(candidate + '/v1/models', { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) return '';
+  } catch {
+    return '';
+  }
+  process.env.DSH_G_MEMORY_RERANK_URL = candidate;
+  console.log('  ℹ️  reranker detected at ' + candidate + ' (DSH_G_MEMORY_RERANK_URL was unset)');
+  return candidate;
+}
+
+/** sha1 digest, used by the injection fixture's vector and hash fields. */
+const createHashSha1 = (text) => createHash('sha1').update(String(text));
+
+/** Hashed character bigrams, L2-normalised: the fixture's deterministic embedder. */
+function fixtureVector(text, dim) {
+  const v = new Array(dim).fill(0);
+  const s = String(text).toLowerCase();
+  for (let i = 0; i < s.length; i += 1) {
+    for (const gram of [s.slice(i, i + 1), s.slice(i, i + 2)]) {
+      if (!gram) continue;
+      const h = createHashSha1(gram);
+      v[h[0] % dim] += 1;
+      v[h[1] % dim] += 0.5;
+    }
+  }
+  return l2Normalize(v);
+}
+
+/**
+ * Stand up a stub embedding endpoint plus a one-memory fixture index, so the
+ * injection-shape check owns its inputs instead of borrowing the corpus.
+ *
+ * @returns {Promise<{dir: string, url: string, stop: () => void}>}
+ */
+async function startInjectionFixture() {
+  const dim = 64;
+  const memory = 'llama-server 的物理批上限是 512 token，超过就会被截断。';
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => { body += d; });
+    req.on('end', () => {
+      let payload = {};
+      try { payload = JSON.parse(body); } catch { /* keep empty */ }
+      const input = payload.input ?? [];
+      const list = Array.isArray(input) ? input : [input];
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        data: list.map((text, index) => ({ index, embedding: Array.from(fixtureVector(text, dim)) })),
+      }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = 'http://127.0.0.1:' + server.address().port;
+  const dir = mkdtempSync(join(tmpdir(), 'gm-inject-fixture-'));
+  const { codes, scale } = quantizeInt8(fixtureVector(memory, dim));
+  const units = [{
+    text: memory, role: 'user', session: 'fixture', seq: 0, time: Date.now(),
+    hash: createHashSha1(memory).digest('hex'), vector: packVector(codes, scale),
+  }];
+  await writeIndex(dir, new MemoryIndex({ version: 1, dim, model: 'fixture', builtAt: Date.now(), units }));
+  return { dir, url, stop: () => { server.close(); rmSync(dir, { recursive: true, force: true }); } };
+}
+
+
 
 /**
  * The decision log, parsed. `record()` is fire-and-forget, so a short wait is part
@@ -486,7 +567,7 @@ async function main() {
       // gate that admits everything for one that rejects everything.
       const resolved = resolveRerankConfig({ url: 'http://127.0.0.1:11436', model: 'bge-reranker-v2-m3' });
       assert.equal(typeof resolved.minScore, 'number');
-      assert.equal(resolved.minScore, DEFAULT_RERANK.minScore);
+      assert.equal(resolved.minScore, defaultRerankConfig().minScore);
     });
 
     // The production path, not a reimplementation of it: this is the assertion
@@ -862,8 +943,13 @@ async function main() {
       // same query passed under one embedding model and failed under the next.
       // Reported as a skip rather than a failure, and the degraded path is
       // covered deterministically by `npm run test:e2e` instead.
-      const rerankConfigured = String(process.env.DSH_G_MEMORY_RERANK_URL ?? '').trim() !== '';
-      const live = !rerankConfigured
+      // A skip counts as a failure under --strict, and "this shell did not export a
+      // variable" is not a property of the code under test: the deployment runs the
+      // reranker as a sidecar on a documented port. Detect it before deciding to skip,
+      // so a machine that has the service gets the stable cross-encoder verdict and a
+      // machine that does not still reports an honest skip.
+      const rerankUrl = await detectLocalReranker();
+      const live = !rerankUrl
         ? { kind: 'skipped', text: 'no reranker configured (set DSH_G_MEMORY_RERANK_URL)' }
         : await cmd.handler({
           agent: { id: 'cmd-live' },
@@ -931,8 +1017,20 @@ async function main() {
     // stable `id`. Injecting an object without one is the kind of defect that only
     // shows up in a live transcript, so it is asserted here instead.
     {
+      // Hermetic: a stub embedder and a one-memory fixture index, so the probe
+      // question always clears the gate. Pointing this at the production corpus made
+      // it skip on every machine whose index did not happen to match, which is the
+      // "green suite, unverified path" shape this file exists to avoid.
+      const fixture = await startInjectionFixture();
       const { ctx: ctx3, state: state3 } = makeCtx();
-      plugin.apply(ctx3, { liveIndex: { enabled: false } });
+      plugin.apply(ctx3, {
+        indexDir: fixture.dir,
+        embed: { url: fixture.url, model: 'fixture' },
+        // Synthesis off, like the hermetic e2e scenario: the shape assertion must not
+        // depend on a model call, and the stub only serves embeddings.
+        synthesis: { enabled: false },
+        liveIndex: { enabled: false },
+      });
       const inbox = state3.listeners.find((l) => l.name === 'agent/inbox/inserted').listener;
       const preStep = state3.listeners.find((l) => l.name === 'agent/pre-step').listener;
 
@@ -956,10 +1054,14 @@ async function main() {
         return null;
       }
 
-      const injected = await waitForInjection(30_000);
-      if (injected === null) {
-        skip('injection shape', 'no recall became ready within 30s (needs the embedding endpoint and a built index)');
-      } else {
+      const injected = await waitForInjection(15_000);
+      fixture.stop();
+      // No skip branch: with the fixture the outcome is a property of this code, so a
+      // missing injection is a failure to report, not an environment to excuse.
+      await check('a recall against the fixture index is injected', () => {
+        assert.ok(injected !== null, 'no recall became ready within 15s against the stub embedder');
+      });
+      if (injected !== null) {
         const msg = injected.messages[0];
         await check('injected context is a well-formed user message', () => {
           assert.equal(msg.role, 'user');

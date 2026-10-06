@@ -1,6 +1,6 @@
 {
   "name": "dsh-g-memory",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "Cross-session semantic memory for DeepSeek Harness: indexes session history locally with EmbeddingGemma-300M embeddings and recalls relevant past context, injecting it as clearly-framed untrusted context. No runtime dependencies, no service to run, synthesis opt-in.",
   "keywords": [
     "deepseek-harness",
@@ -47,7 +47,7 @@
     "recall": "node bin/dsh-g-memory.mjs recall",
     "selfcheck": "node bin/dsh-g-memory.mjs selfcheck",
     "plugincheck": "node bin/dsh-g-memory.mjs plugincheck",
-    "test": "node scripts/test-modules-load.mjs && node scripts/test-cli-args.mjs && node scripts/test-policy.mjs && node scripts/test-redaction.mjs && node scripts/test-cards.mjs && node scripts/test-store-damage.mjs && node scripts/test-live-index.mjs && node scripts/test-governance.mjs && node scripts/test-consolidate.mjs && node scripts/test-plugin.mjs && node scripts/test-loader-contract.mjs && node scripts/test-incremental-build.mjs && node scripts/test-e2e-hermetic.mjs",
+    "test": "node scripts/test-modules-load.mjs && node scripts/test-cli-args.mjs && node scripts/test-config-env.mjs && node scripts/test-policy.mjs && node scripts/test-redaction.mjs && node scripts/test-cards.mjs && node scripts/test-store-damage.mjs && node scripts/test-live-index.mjs && node scripts/test-governance.mjs && node scripts/test-consolidate.mjs && node scripts/test-plugin.mjs && node scripts/test-loader-contract.mjs && node scripts/test-incremental-build.mjs && node scripts/test-e2e-hermetic.mjs",
     "test:unit": "node scripts/test-policy.mjs && node scripts/test-redaction.mjs && node scripts/test-cards.mjs && node scripts/test-store-damage.mjs",
     "test:loader": "node scripts/test-loader-contract.mjs",
     "test:synthesis": "node scripts/test-synthesis.mjs",
@@ -63,7 +63,8 @@
     "test:consolidate": "node scripts/test-consolidate.mjs",
     "test:live": "node scripts/test-live-index.mjs",
     "test:governance": "node scripts/test-governance.mjs",
-    "eval:challenge": "node scripts/eval-retrieval.mjs --cases scripts/cases.challenge.json --min-rate 0"
+    "eval:challenge": "node scripts/eval-retrieval.mjs --cases scripts/cases.challenge.json --min-rate 0",
+    "test:config": "node scripts/test-config-env.mjs"
   },
   "bin": {
     "dsh-g-memory": "bin/dsh-g-memory.mjs"

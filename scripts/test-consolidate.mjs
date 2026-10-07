@@ -240,6 +240,9 @@ await check('every early return leaves a receipt', async () => {
   const recall = new AutoRecall(loopCtx, {
     indexDir: loopIndex,
     synthesis: { baseUrl, model: 'stub' },
+    // `rehydrate: false`: this scenario measures the live-event path, and the log replay
+    // (covered on its own below) would deliver the same material a second time.
+    rehydrate: false,
     consolidation: { enabled: true, tickMs: 60, minIntervalHours: 0, minTurns: 1, minSessionTurns: 1, idleMs: 0 },
   });
 
@@ -375,6 +378,51 @@ await check('auth headers carry a credential, and ask for none on loopback', asy
   assert.equal(local.error, null, 'a locally served model needs no credential');
   assert.equal(local.headers.Authorization, undefined);
 });
+
+// ── the restart scenario ─────────────────────────────────────────────────────
+// What the user actually hit: chat a few turns, restart, and the material gate starts
+// from zero, so the same five turns have to be earned again. The logs are the durable
+// record, so a fresh process rebuilds the gate from them instead.
+{
+  const restartHome = await mkdtemp(join(tmpdir(), 'gm-rehydrate-'));
+  const restartSession = join(restartHome, 'sessions', '--tmp--', 'restart-session');
+  await mkdir(restartSession, { recursive: true });
+  const restartLines = [JSON.stringify({ type: 'session', id: 'restart-session' })];
+  for (let i = 1; i <= 3; i += 1) {
+    restartLines.push(JSON.stringify({
+      type: 'user/message',
+      seq: i,
+      // Older than the idle window on purpose: the session must look finished.
+      time: Date.now() - (40 - i * 5) * 60_000,
+      // Substantive on purpose: the unit extractor's low-information filter drops
+      // short greetings, which would leave the log with nothing to count.
+      data: { source: { kind: 'user' }, content: [{ type: 'text', text: '第 ' + i + ' 轮：重启之后这几轮不该被忘掉，所以这一段要写得足够具体——材料计数由日志重建，而不是存在内存里。' }] },
+    }));
+  }
+  await writeFile(join(restartSession, 'session.v4.jsonl'), restartLines.join('\n') + '\n');
+  const previousHome = process.env.DSH_HOME;
+  process.env.DSH_HOME = restartHome;
+  try {
+    const fresh = new AutoRecall(
+      { on: () => () => {}, logger: { debug: () => {}, warn: () => {}, info: () => {} } },
+      {
+        indexDir: join(restartHome, 'dsh-g-memory', 'index'),
+        consolidation: { enabled: true, minTurns: 3, minSessionTurns: 3, idleMs: 10 * 60_000, minIntervalHours: 0 },
+      },
+    );
+    await check('a restarted plugin rebuilds its material from the logs', async () => {
+      assert.equal(fresh.consolidation.sessions.size, 0, 'a fresh process remembers nothing');
+      const seeded = await fresh.rehydrateMaterial();
+      assert.equal(seeded, 1, 'the session with undistilled turns was seeded');
+      assert.deepEqual(fresh.consolidation.pick(), ['restart-session'],
+        'the gate is ready again without earning the same turns a second time');
+      assert.equal(fresh.consolidation.shouldRun().run, true, 'and the global gate agrees');
+    });
+  } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previousHome;
+    await rm(restartHome, { recursive: true, force: true });
+  }
+}
 
 // ── the excerpt window ───────────────────────────────────────────────────────
 await check('the excerpt keeps the most recent material, not the oldest', async () => {

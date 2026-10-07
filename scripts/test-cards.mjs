@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSyn
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { parseCard, readCards, writeCards, withVector, searchCards, tagIndex, lastSkippedCards } from '../lib/cards.mjs';
-import { ConsolidationTracker, readConsolidationState, writeConsolidationState } from '../lib/consolidate.mjs';
+import { ConsolidationTracker, materialFromUnits, readConsolidationState, writeConsolidationState } from '../lib/consolidate.mjs';
 import { isLowInformation } from '../lib/chunker.mjs';
 
 let pass = 0, fail = 0;
@@ -233,6 +233,36 @@ await check('a session below the minimum is never distilled', () => {
   const t = new ConsolidationTracker({ enabled: true, minIntervalHours: 0, minTurns: 1, minSessionTurns: 3, idleMs: 0 }, () => 1e12);
   t.note('a'); t.note('b');
   assert.deepEqual(t.pick(), []);
+});
+
+await check('material is counted from user turns only, and only after the last run', () => {
+  const now = Date.now();
+  const units = [
+    { role: 'user', time: now - 45 * 60_000 },
+    { role: 'assistant', time: now - 44 * 60_000 },
+    { role: 'user', time: now - 30 * 60_000 },
+    { role: 'user', time: now - 20 * 60_000 },
+    { role: 'user', time: now - 5 * 3600_000 },
+  ];
+  assert.deepEqual(materialFromUnits(units, now - 3600_000), { turns: 3, lastAt: now - 20 * 60_000 });
+  assert.deepEqual(materialFromUnits([], 0), { turns: 0, lastAt: 0 });
+  assert.deepEqual(materialFromUnits([{ role: 'user' }], 0), { turns: 0, lastAt: 0 }, 'a turn without a time cannot be aged');
+});
+
+await check('a restart can rebuild the gate: seeding makes a fresh tracker ready', () => {
+  const now = Date.now();
+  const config = { enabled: true, minTurns: 3, minSessionTurns: 3, idleMs: 10 * 60_000, minIntervalHours: 0 };
+  const fresh = new ConsolidationTracker(config, () => now);
+  assert.equal(fresh.shouldRun().run, false, 'a fresh process has nothing to distil');
+  assert.equal(fresh.seed('session-a', { turns: 3, lastAt: now - 20 * 60_000 }), true);
+  assert.equal(fresh.seed('session-b', { turns: 3, lastAt: now - 21 * 60_000 }), true);
+  assert.deepEqual(fresh.pick().sort(), ['session-a', 'session-b']);
+  assert.equal(fresh.shouldRun().run, true, 'the rebuilt material satisfies the gate');
+  // Only ever raises: the live process is the more recent observer.
+  fresh.releaseAll();
+  fresh.seed('session-a', { turns: 1, lastAt: now - 5 * 3600_000 });
+  assert.equal(fresh.sessions.get('session-a').turns, 3);
+  assert.equal(fresh.sessions.get('session-a').lastAt, now - 20 * 60_000);
 });
 
 await check('the quality filter only drops text that cannot carry a fact', () => {

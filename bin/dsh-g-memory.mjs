@@ -23,9 +23,9 @@ import { existsSync } from 'node:fs';
  * through a temp file so a crash cannot leave a half-written header behind — the
  * rest of the file is append-only, so a torn line costs one vector and no more.
  */
-async function writeCheckpointHeader(path, model, dim) {
+async function writeCheckpointHeader(path, model, dim, docPrefix = '') {
   const tmp = `${path}.tmp-${process.pid}`;
-  await writeFile(tmp, `${JSON.stringify({ kind: 'checkpoint', model, dim })}\n`, { mode: 0o600 });
+  await writeFile(tmp, `${JSON.stringify({ kind: 'checkpoint', model, dim, docPrefix })}\n`, { mode: 0o600 });
   await rename(tmp, path);
 }
 import { basename, dirname, join, resolve } from 'node:path';
@@ -385,10 +385,12 @@ async function cmdBuild(args) {
       const lines = (await readFile(checkpointPath, 'utf8')).split('\n').filter(Boolean);
       const header = JSON.parse(lines[0]);
       if (header.kind !== 'checkpoint') throw new Error('unrecognised checkpoint format');
-      if (header.model !== cfg.model || header.dim !== health.dim) {
+      if (header.model !== cfg.model || header.dim !== health.dim
+          || String(header.docPrefix ?? '') !== String(cfg.docPrefix ?? '')) {
         console.warn(
           `[resume] checkpoint was built with ${header.model ?? 'an unknown model'}/${header.dim ?? '?'}d `
-          + `but the embedder is ${cfg.model}/${health.dim}d — ignoring it`,
+          + `doc-prefix ${JSON.stringify(header.docPrefix ?? '')} but the embedder is `
+          + `${cfg.model}/${health.dim}d doc-prefix ${JSON.stringify(cfg.docPrefix ?? '')} — ignoring it`,
         );
       } else {
         for (const line of lines.slice(1)) {
@@ -423,10 +425,15 @@ async function cmdBuild(args) {
   if (!args.fresh) {
     try {
       const previous = await readIndex(outDir);
-      if (previous.data.model !== cfg.model || previous.dim !== health.dim) {
+      // The doc prefix is part of the space: same weights, same width, different
+      // vectors. Reusing across a prefix change would build an index whose halves
+      // mean different things, with no width to trip over and nothing to report.
+      const prefixMismatch = String(previous.data.docPrefix ?? '') !== String(cfg.docPrefix ?? '');
+      if (previous.data.model !== cfg.model || previous.dim !== health.dim || prefixMismatch) {
         console.warn(
-          `[reuse] previous index is ${previous.data.model}/${previous.dim}d but the embedder is `
-          + `${cfg.model}/${health.dim}d — re-embedding everything`,
+          `[reuse] previous index is ${previous.data.model}/${previous.dim}d `
+          + `doc-prefix ${JSON.stringify(previous.data.docPrefix ?? '')} but the embedder is `
+          + `${cfg.model}/${health.dim}d doc-prefix ${JSON.stringify(cfg.docPrefix ?? '')} — re-embedding everything`,
         );
         // The model name is a *label*, not the weights: the endpoint ignores it, so
         // renaming an engine (or passing a different string for the same model)
@@ -473,7 +480,7 @@ async function cmdBuild(args) {
       indexed.push({ ...unit, vector: Buffer.from(cached, 'base64') });
       reused += 1;
     } else {
-      const raw = await embedAdaptive(unit.text, cfg);
+      const raw = await embedAdaptive(unit.text, cfg, { purpose: 'doc' });
       if (raw.length !== health.dim) throw new Error(`dimension drift: got ${raw.length}, expected ${health.dim}`);
       const { codes, scale } = quantizeInt8(l2Normalize(raw));
       const packed = packVector(codes, scale);
@@ -490,7 +497,7 @@ async function cmdBuild(args) {
         if (!checkpointResumed) {
           // Header first, written atomically: a checkpoint without a trustworthy
           // header is one the next run has to throw away.
-          await writeCheckpointHeader(checkpointPath, cfg.model, health.dim);
+          await writeCheckpointHeader(checkpointPath, cfg.model, health.dim, cfg.docPrefix ?? '');
           checkpointResumed = true;
         }
         // Appended, not rewritten: the file grows with the new work instead of
@@ -512,7 +519,7 @@ async function cmdBuild(args) {
   if (pending.length > 0) {
     try {
       await mkdir(outDir, { recursive: true });
-      if (!checkpointResumed) await writeCheckpointHeader(checkpointPath, cfg.model, health.dim);
+      if (!checkpointResumed) await writeCheckpointHeader(checkpointPath, cfg.model, health.dim, cfg.docPrefix ?? '');
       await appendFile(checkpointPath, `${pending.join('\n')}\n`, { mode: 0o600 });
       pending.length = 0;
     } catch (error) {
@@ -531,6 +538,8 @@ async function cmdBuild(args) {
     version: INDEX_VERSION,
     dim: health.dim,
     model: cfg.model,
+    queryPrefix: cfg.queryPrefix ?? '',
+    docPrefix: cfg.docPrefix ?? '',
     builtAt: Date.now(),
     units: indexed,
   });
@@ -616,10 +625,12 @@ async function cmdRecall(args) {
   const cfg = resolveConfig();
 
   const index = await readIndex(dir);
+  assertIndexSpace(index, cfg);
+  warnQuerySpace(index, cfg, 'recall');
   console.log(`[index] ${index.size} units, dim ${index.dim}, from ${dir}`);
   console.log(`[query] ${query}\n`);
 
-  const [raw] = await embedBatch([query], cfg);
+  const [raw] = await embedBatch([query], cfg, { purpose: 'query' });
   const results = index.recall(prepareQueryVector(raw), query, { k: top });
   for (const { index: i, score } of results) {
     const unit = index.unit(i);
@@ -745,6 +756,34 @@ const command = args._.shift();
  * already holds the transcript. Here it is a standalone pass, so the numbers it
  * reports are the pessimistic ones (full input cost, no cache).
  */
+/**
+ * Refuse to measure in a different space than the index was built in.
+ *
+ * The index header records the task prefixes. A CLI that was not handed the same
+ * ones embeds bare text and compares it against prompted vectors — identical
+ * width, no error, meaningless numbers. Recording the prefixes made this
+ * checkable, so it is checked instead of assumed.
+ */
+function assertIndexSpace(index, cfg) {
+  const built = index.data.docPrefix;
+  if (built === undefined) return; // written before the field existed: nothing to compare
+  if (String(built) === String(cfg.docPrefix ?? '')) return;
+  console.error('[space] the index was built with doc-prefix ' + JSON.stringify(built));
+  console.error('        but this shell is configured with ' + JSON.stringify(cfg.docPrefix ?? '') + '.');
+  console.error('        Same width, different space — set DSH_G_MEMORY_EMBED_DOC_PREFIX (and');
+  console.error('        DSH_G_MEMORY_EMBED_QUERY_PREFIX) to the deployment values, then re-run.');
+  process.exit(1);
+}
+
+/** The query side is a quality question, not a correctness one: warn, do not refuse. */
+function warnQuerySpace(index, cfg, command) {
+  const built = index.data.queryPrefix;
+  if (built === undefined) return;
+  if (String(built) === String(cfg.queryPrefix ?? '')) return;
+  console.warn(command + ': the index was built for query-prefix ' + JSON.stringify(built)
+    + ' but this shell sends ' + JSON.stringify(cfg.queryPrefix ?? '') + ' — ranking will be degraded');
+}
+
 async function cmdDistill(args) {
   const limit = Number(args.recent ?? 1);
   const synthesisDefaults = defaultSynthesisConfig();
@@ -754,6 +793,11 @@ async function cmdDistill(args) {
     console.error('distill: no synthesis endpoint configured (set DSH_G_MEMORY_LLM_URL or pass --url)');
     process.exitCode = 1; return;
   }
+
+  // Cards live in the index's space, so a distill run with the wrong prefixes would
+  // write vectors the card gate can never match — silently, at the right width.
+  const spaceProbe = await readIndex(defaultIndexDir()).catch(() => null);
+  if (spaceProbe) assertIndexSpace(spaceProbe, resolveConfig());
 
   const logs = await listSessions();
   const picked = logs.slice(0, limit);
@@ -805,7 +849,7 @@ async function cmdDistill(args) {
         + `(${payload?.usage?.completion_tokens ?? 0} tokens)`);
       continue;
     }
-    const [vec] = await embedBatch([card.summary], resolveConfig());
+    const [vec] = await embedBatch([card.summary], resolveConfig(), { purpose: 'doc' });
     cards.push(withVector(card, vec));
     const u = payload.usage ?? {};
     console.log(`  ✓ ${log.slice(0, 16)}  ${text.length}→${card.summary.length} 字符  `

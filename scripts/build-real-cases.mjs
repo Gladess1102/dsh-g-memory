@@ -101,7 +101,7 @@ for (let i = 0; i < total; i += 1) {
 
 /** Keep the real retrieval honest: the same gate the plugin uses. */
 async function admitted(query, n = 3) {
-  const [v] = await embedBatch([query], cfg);
+  const [v] = await embedBatch([query], cfg, { purpose: 'query' });
   const hits = index.recall(prepareQueryVector(v), query, { k: 20 });
   const entries = hits.map(({ index: i, score }) => {
     const u = index.unit(i);

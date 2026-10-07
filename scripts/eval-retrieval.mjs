@@ -243,7 +243,7 @@ if (cases.length === 0) {
   process.exit(1);
 }
 
-const queryVectors = await embedBatch(cases.map((c) => c.query), cfg);
+const queryVectors = await embedBatch(cases.map((c) => c.query), cfg, { purpose: 'query' });
 
 /**
  * The card store, searched exactly the way the product searches it.

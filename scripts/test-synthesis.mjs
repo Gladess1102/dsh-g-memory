@@ -69,7 +69,9 @@ if (candidatesFile !== undefined) {
 } else {
   try {
     const index = await readIndex(indexDir);
-    const [vector] = await embedBatch([query], resolveConfig());
+    // A query, so it must carry the query-side instruction: the index it is
+    // compared against was built with the document-side one.
+    const [vector] = await embedBatch([query], resolveConfig(), { purpose: 'query' });
     candidates = index
       .recall(prepareQueryVector(vector), query, { k: 8 })
       .map(({ index: i }) => {

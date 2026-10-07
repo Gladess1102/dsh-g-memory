@@ -34,12 +34,16 @@ lets the retrieval arms complement each other.
 
 Two arms, fused with Reciprocal Rank Fusion:
 
-- **vector** — 768-d embeddings from **EmbeddingGemma-300M** (the current
-  default: `embed.model: embed-gemma`, `embed.url: http://127.0.0.1:11439`),
-  int8-quantised, cosine over every unit. BGE-M3 (1024-d) came before it and is
-  still supported by configuration; the switch halved the model size and won on
-  this corpus's real queries (bench report kept outside the repository, since it
-  quotes them).
+- **vector** — 768-d embeddings from **EmbeddingGemma 2** (the current default:
+  `embed.model: embeddinggemma-2`, `embed.url: http://127.0.0.1:11439`),
+  int8-quantised, cosine over every unit. It wants a role-specific instruction in
+  front of the text, which is why `embed.queryPrefix` / `embed.docPrefix` exist:
+  the caller states whether it is embedding a query or a document and the prefix
+  is applied once, at the wire. Measured on this corpus (28 labelled cases, 99-way
+  pool): R@1 24/28 bare, **26/28 with the model card's prompts**, against 25/28 for
+  the model it replaces. EmbeddingGemma-300M and BGE-M3 (1024-d) both still work
+  by configuration; an index is only valid in the space that produced it, so a
+  model change means a full rebuild.
   An index is only valid in the space that produced it, so a model change
   invalidates reuse and is refused rather than mixed.
 - **lexical** — adjacent-character **bigram** tokenisation over CJK plus whole
@@ -330,6 +334,8 @@ All optional; defaults suit a single-machine setup.
 | `DSH_G_MEMORY_AUTO_MIN_SCORE` | `0.01639` | Minimum fused score before anything is injected. RRF scores are quantised: one arm at rank 0 scores `1/61 = 0.01639`, both arms at rank 0 score `2/61 = 0.03279`, and **nothing falls between**. The default is the floor, so any single-arm hit counts; raise it to `0.03279` to require that both arms agree. |
 | `DSH_G_MEMORY_EMBED_URL` | `http://127.0.0.1:11439` | Embedding endpoint. |
 | `DSH_G_MEMORY_EMBED_MODEL` | `embed-gemma` | Model name sent to the endpoint. |
+| `DSH_G_MEMORY_EMBED_QUERY_PREFIX` | *(empty)* | Instruction prepended to every **query** before it is embedded. EmbeddingGemma 2 wants `task: question answering | query: ` (or `task: search result | query: `); leave empty for a model that wants no prefix. |
+| `DSH_G_MEMORY_EMBED_DOC_PREFIX` | *(empty)* | Instruction prepended to every **document** (index units, card summaries). EmbeddingGemma 2 wants `title: none | text: ` when the chunk has no title. |
 | `DSH_G_MEMORY_LLM_URL` | *(unset)* | Synthesis chat endpoint; unset disables synthesis. |
 | `DSH_G_MEMORY_LLM_MODEL` | `deepseek-v4-flash` | Synthesis model. |
 | `DSH_G_MEMORY_SYNTHESIS` | `on` | Set `off` to skip synthesis entirely. |
@@ -431,6 +437,8 @@ Environment:
 |---|---|---|
 | `DSH_G_MEMORY_EMBED_URL` | `http://127.0.0.1:11439` | embedding endpoint |
 | `DSH_G_MEMORY_EMBED_MODEL` | `embed-gemma` | model name sent to the endpoint |
+| `DSH_G_MEMORY_EMBED_QUERY_PREFIX` | *(empty)* | prepended to query text (e.g. `task: question answering | query: `) |
+| `DSH_G_MEMORY_EMBED_DOC_PREFIX` | *(empty)* | prepended to document text (e.g. `title: none | text: `) |
 | `DSH_G_MEMORY_EMBED_TIMEOUT_MS` | `120000` | per-request timeout |
 | `DSH_G_MEMORY_EMBED_KEY` | — | bearer token, if the endpoint needs one |
 | `DSH_G_MEMORY_ZSTD` | `zstd` | path to the zstd binary |

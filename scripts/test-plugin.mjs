@@ -794,18 +794,37 @@ async function main() {
           embed: { url: 'http://embed' }, rerank: { url: 'http://rerank' },
           policy: { marginGate: 1.18 }, synthesis: { enabled: true },
           consolidate: { enabled: true }, autoConfig: { candidates: 5 }, apiKey: 'k',
+          judge: { provider: 'rules' }, resident: { enabled: true },
         },
         '/tmp/index',
       );
-      // The list is every `options.X` / `this.options.X` the class reads, taken
-      // from the source rather than from memory of it.
-      for (const key of ['indexDir', 'embed', 'rerank', 'policy', 'synthesis', 'apiKey', 'auto']) {
+      // Every key the class reads off its options, taken from the source rather
+      // than from memory of it. The hand-written list this replaced had missed
+      // `judge` and `resident`: the config schema accepted them, --dump-config
+      // printed them, the offline rehearsal passed, and production still ran with
+      // both switches off because this projection never passed them on. Silence
+      // again — so the check now derives the list instead of restating it.
+      const recallSource = readFileSync(new URL('../lib/auto-recall.mjs', import.meta.url), 'utf8');
+      const readKeys = new Set([...recallSource.matchAll(/this\.options\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]));
+      // Read from options but deliberately not composition fields, so their
+      // absence from the projection is not a defect:
+      //   cwd       handed in by the resident layer and by tests
+      //   synthesize  the loop's own switch to skip the synthesiser
+      //   rehydrate   the loop's own switch to skip re-reading session material
+      const notConfig = new Set(['cwd', 'synthesize', 'rehydrate']);
+      const projected = new Set(Object.keys(wired));
+      const missing = [...readKeys].filter((key) => !projected.has(key) && !notConfig.has(key));
+      assert.deepEqual(missing, [], 'autoRecallOptions must project every option the class reads: ' + missing.join(', '));
+      for (const key of ['indexDir', 'embed', 'rerank', 'policy', 'judge', 'resident', 'synthesis', 'apiKey', 'auto']) {
         assert.ok(wired[key] !== undefined, `AutoRecall reads options.${key}; it must be passed`);
       }
       // The names differ on purpose (composition `consolidate` → class
       // `consolidation`), which is exactly why a spread would not have helped.
       assert.deepEqual(wired.consolidation, { enabled: true }, 'consolidate must reach the tracker');
       assert.equal(wired.indexDir, '/tmp/index');
+      // The two that were actually dropped, in production, for a full release.
+      assert.equal(wired.judge.provider, 'rules', 'judge must reach the class');
+      assert.equal(wired.resident.enabled, true, 'resident must reach the class');
     });
 
     // ------------------------------- auto path: the consolidation switch
@@ -1092,6 +1111,39 @@ async function main() {
         });
       }
         }
+
+    // ------------------------------------------------------ the wiring, end to end
+    // A rehearsal of the judge and resident layers passed on real data while
+    // production still ran with both switches off. The rehearsal built AutoRecall
+    // directly; the defect was in autoRecallOptions(), the projection between the
+    // plugin's config and that constructor. So this goes through apply() — the
+    // only entry production uses — and asserts that a decision happened, not
+    // merely that a key was copied.
+    {
+      const fixture = await startInjectionFixture();
+      const { ctx: ctx4, state: state4 } = makeCtx();
+      plugin.apply(ctx4, {
+        indexDir: fixture.dir,
+        embed: { url: fixture.url, model: 'fixture' },
+        rerank: { url: '' },
+        synthesis: { enabled: false },
+        liveIndex: { enabled: false },
+        judge: { provider: 'rules' },
+      });
+      const inbox = state4.listeners.find((l) => l.name === 'agent/inbox/inserted').listener;
+      inbox({
+        agent: { id: 'wired-probe' },
+        message: { source: { kind: 'user' }, content: [{ type: 'text', text: '你还记得我们上次说的那个物理批上限吗' }] },
+      });
+      await new Promise((r) => setTimeout(r, 900));
+      const judged = (await telemetry()).filter((e) => e.event === 'judge' && e.session === 'wired-probe').pop();
+      fixture.stop();
+      await check('apply() hands the judge config down, and the judge actually runs', () => {
+        assert.ok(judged, 'no judge decision recorded: the config never reached the class');
+        assert.equal(judged.source, 'rules');
+        assert.equal(judged.verdict, 'fire');
+      });
+    }
 
     console.log('');
     const failed = results.filter((r) => !r.ok);

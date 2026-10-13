@@ -147,6 +147,25 @@ await check('the opening turn gets the named card, and only the named card', asy
   assert.ok(resident.why.some((w) => String(w).startsWith('name')), 'a name match is what put it there');
 });
 
+await check('a long card is trimmed, not dropped whole', async () => {
+  // Measured failure this pins down: the injection frame is 792 characters, so a
+  // card line longer than the remaining budget is skipped — and a first entry that
+  // does not fit leaves renderRecall returning the empty string, which made the
+  // resident layer silently dead in the workspace whose cards happened to be long.
+  // Real cards run to 580 characters, so this is the normal case, not an edge one.
+  const long = 'dsh-g-memory 的长卡片测试。' + '这一段用来把摘要撑到远超单条预算的长度，模拟真实卡片。'.repeat(14);
+  await writeCards([card('44444444444444444444', long, { tags: ['dsh-g-memory'] })], join(home, 'dsh-g-memory', 'cards.ndjson'));
+  const ar = makeRecall({ enabled: true });
+  ar.start('agent-longcard', '继续 dsh-g-memory 插件的活');
+  await new Promise((r) => setTimeout(r, 700));
+  const entry = ar.pending.get('agent-longcard');
+  assert.equal(entry?.status, 'ready', 'a long card still produces a payload');
+  assert.ok(String(entry.text).length > 0);
+  assert.match(String(entry.text), /长卡片测试/, 'and it is the matching card');
+  const log = await eventsFor('agent-longcard');
+  assert.ok(log.some((e) => e.event === 'resident'), 'recorded as resident');
+});
+
 await check('later turns do not re-inject the working set', async () => {
   const ar = makeRecall({ enabled: true });
   ar.start('agent-later', '继续 dsh-g-memory 插件的活');

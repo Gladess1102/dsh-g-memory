@@ -42,7 +42,10 @@ function fixtureVector(text, dim) {
       v[h[1] % dim] += 0.5;
     }
   }
-  return l2Normalize(v);
+  // Array.from, not the Float32Array itself: l2Normalize returns a typed array,
+  // and JSON.stringify serialises that as {"0":…,"1":…} — which the embedder
+  // client correctly rejects as "missing vector". (Cost one debugging round.)
+  return Array.from(l2Normalize(v));
 }
 
 /** The stub embedder, counting how often the pipeline actually reaches it. */
@@ -64,14 +67,38 @@ await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const embedUrl = 'http://127.0.0.1:' + server.address().port;
 
 const memory = 'llama-server 的物理批上限是 512 token，超过就会被截断。';
+const filler = '另一条记录：今天天气不错，适合出门散步。';
 const dir = mkdtempSync(join(tmpdir(), 'gm-judge-index-'));
 {
-  const { codes, scale } = quantizeInt8(fixtureVector(memory, 64));
+  // Two units, not one: the reranker is skipped for a single candidate
+  // (rerankEntries returns early below two), so a one-unit fixture can never
+  // exercise the gate — it always passes on the fused floor and the hint branch
+  // is unreachable.
+  const unit = (text, seq) => {
+    const { codes, scale } = quantizeInt8(fixtureVector(text, 64));
+    return { text, role: 'user', session: 'fixture', seq, time: Date.now(), hash: sha1(text).digest('hex'), vector: packVector(codes, scale) };
+  };
   await writeIndex(dir, new MemoryIndex({
     version: 1, dim: 64, model: 'fixture', builtAt: Date.now(),
-    units: [{ text: memory, role: 'user', session: 'fixture', seq: 0, time: Date.now(), hash: sha1(memory).digest('hex'), vector: packVector(codes, scale) }],
+    units: [unit(memory, 0), unit(filler, 1)],
   }));
 }
+
+/** A stub reranker whose score the test sets, so "gate passes" is a choice. */
+let rerankScore = 5;
+const rerankServer = createServer((req, res) => {
+  let body = '';
+  req.on('data', (d) => { body += d; });
+  req.on('end', () => {
+    let payload = {};
+    try { payload = JSON.parse(body); } catch { /* keep empty */ }
+    const documents = Array.isArray(payload.documents) ? payload.documents : [];
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ results: documents.map((_, index) => ({ index, relevance_score: rerankScore })) }));
+  });
+});
+await new Promise((r) => rerankServer.listen(0, '127.0.0.1', r));
+const rerankUrl = 'http://127.0.0.1:' + rerankServer.address().port;
 
 let failures = 0;
 async function check(name, fn) {
@@ -88,10 +115,11 @@ const events = async () => {
   await new Promise((r) => setTimeout(r, 120));
   try { return readFileSync(statsPath, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; }
 };
-const makeRecall = (judge) => new AutoRecall({ logger: { debug() {}, info() {} } }, {
+const makeRecall = (judge, withRerank = false) => new AutoRecall({ logger: { debug() {}, info() {} } }, {
   indexDir: dir,
   embed: { url: embedUrl, model: 'fixture' },
-  rerank: { url: '' },
+  rerank: withRerank ? { url: rerankUrl, model: 'stub', path: '/v1/rerank', maxChars: 800 } : { url: '' },
+  policy: { gate: 3, midGate: 3, marginGate: 0 },
   consolidate: false,
   judge,
 });
@@ -150,7 +178,37 @@ await check('the first turn of a session is knowable', async () => {
   assert.equal(ar.turnCounts.get('agent-turns'), 2);
 });
 
+await check('judge fired but the gate dropped: a one-line hint points at the tool', async () => {
+  rerankScore = -10; // the gate cannot pass on this
+  const ar = makeRecall({ provider: 'rules' }, true);
+  ar.start('agent-hint', '你还记得我们上次怎么处理批上限的吗');
+  await new Promise((r) => setTimeout(r, 1200));
+  const entry = ar.pending.get('agent-hint');
+  const diag = await events();
+  assert.equal(entry?.status, 'ready', 'the turn still gets a payload; entry=' + JSON.stringify(entry)
+    + ' events=' + JSON.stringify(diag.slice(-3)));
+  assert.match(String(entry.text), /memory_recall/, 'the hint names the tool');
+  assert.ok(String(entry.text).length < 300, 'and stays cheap');
+  const log = await events();
+  const hint = log.filter((e) => e.event === 'hint').pop();
+  assert.ok(hint, 'the hint is recorded');
+  assert.equal(hint.kind, 'explicit');
+  assert.ok(String(hint.gateWhy).length > 0, 'and carries why the gate refused');
+});
+
+await check('judge fired and the gate passed: real memory, not a hint', async () => {
+  rerankScore = 5; // comfortably over the floor of 3
+  const ar = makeRecall({ provider: 'rules' }, true);
+  ar.start('agent-real', '你还记得我们上次怎么处理批上限的吗');
+  await new Promise((r) => setTimeout(r, 1200));
+  const entry = ar.pending.get('agent-real');
+  assert.equal(entry?.status, 'ready');
+  assert.match(String(entry.text), /物理批上限|512/, 'the fixture memory itself is injected');
+  assert.ok(!/memory_recall/.test(String(entry.text)), 'no hint when there is memory');
+});
+
 server.close();
+rerankServer.close();
 rmSync(dir, { recursive: true, force: true });
 
 console.log('');

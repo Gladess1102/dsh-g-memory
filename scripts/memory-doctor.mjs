@@ -37,6 +37,7 @@ import { embedBatch, resolveConfig } from '../lib/embedder.mjs';
 import { rerankEntries, resolveRerankConfig } from '../lib/rerank.mjs';
 import { readCards, defaultCardPath } from '../lib/cards.mjs';
 import { resolveJudgeConfig } from '../lib/judge.mjs';
+import { resolveApiKey } from '../lib/synthesize.mjs';
 import { resolveResidentConfig } from '../lib/resident.mjs';
 import { resolvePolicy } from '../lib/policy.mjs';
 
@@ -182,13 +183,21 @@ try {
   const judgeFire = rows.filter((r) => r.event === 'judge' && r.verdict === 'fire').length;
   const hints = count('hint');
   const resident = count('resident');
-  const lateDrops = count('late-drop');
+  /**
+   * A late-drop is not one thing any more. `carried-to-next-turn` is a result
+   * that missed this turn's window and was handed to the next one — the repair
+   * working, not a loss; every other reason is still a recall that died waiting.
+   */
+  const lateDrops = rows.filter((r) => r.event === 'late-drop');
+  const carried = lateDrops.filter((r) => r.why === 'carried-to-next-turn').length;
+  const lostLate = lateDrops.length - carried;
 
   if (rows.length === 0) warn('traffic', 'no decisions recorded in the last ' + days + ' days', 'is DSH_G_MEMORY_AUTO_STATS pointing at ' + statsPath + '?');
   else {
     ok('traffic', 'last ' + days + ' d: armed ' + armed + ', inject ' + injected + ', gate pass/drop ' + gatePass + '/' + gateDrop
       + (judged ? ', judge ' + judged + ' (fire ' + judgeFire + ')' : '')
-      + (resident ? ', resident ' + resident : '') + (hints ? ', hint ' + hints : '') + ', late-drop ' + lateDrops);
+      + (resident ? ', resident ' + resident : '') + (hints ? ', hint ' + hints : '')
+      + ', late-drop ' + lateDrops.length + (carried ? ' (' + carried + ' carried into the next turn, ' + lostLate + ' lost)' : ''));
     // The silent patterns, named. Each of these has happened for real.
     if (armed > 20 && injected === 0 && gatePass === 0) {
       bad('traffic', 'armed ' + armed + ' times, the gate never passed: automatic injection is effectively off',
@@ -197,8 +206,11 @@ try {
     if (judgeFire > 0 && hints === 0 && resident === 0) {
       warn('traffic', 'the judge fired ' + judgeFire + ' times but nothing was ever handed to the model', 'is DSH_G_MEMORY_HINT off, or was every fire also a gate pass?');
     }
-    if (lateDrops > 0) {
-      warn('traffic', 'late-drop seen ' + lateDrops + ' times: a recall finished and was never consumed', 'expected occasionally; a rising count means the step window is closing before retrieval finishes');
+    if (lostLate > 0) {
+      warn('traffic', 'late-drop lost ' + lostLate + ' recall(s) that were never consumed' + (carried ? ' (and carried ' + carried + ' into the next turn)' : ''),
+        'expected occasionally; a rising count means the step window is closing before retrieval finishes');
+    } else if (carried > 0) {
+      ok('traffic', carried + ' recall(s) finished after their turn\'s last step and were carried into the next one');
     }
     if (injected > 0) {
       const ratios = rows.filter((r) => r.event === 'inject').map((r) => Number(r.chars) || 0);
@@ -225,6 +237,12 @@ async function declaredInProfiles() {
     out.push({
       profile,
       judge: grab(/^    judge:\n(?:[^\n]*\n)*?      provider: (\S+)/m),
+      // The backend the declared provider would actually reach. Without these the
+      // reachability check below could only ever inspect this shell's
+      // environment, where a judge is almost always `off` — so it would report
+      // nothing about the host it is supposed to be diagnosing.
+      judgeUrl: grab(/^    judge:\n(?:[^\n]*\n)*?        url: (\S+)/m),
+      judgeKeyName: grab(/^    judge:\n(?:[^\n]*\n)*?        apiKeyName: (\S+)/m),
       resident: grab(/^    resident:\n(?:[^\n]*\n)*?      enabled: (\S+)/m),
       gate: grab(/^    policy:\n(?:[^\n]*\n)*?      gate: (\S+)/m),
     });
@@ -272,6 +290,55 @@ if (judge.provider === 'off' && !declared.some((d) => d.judge && d.judge !== 'of
   ok('config', 'this shell has judge off (it reads the environment); the host runs whatever the profile declares');
 } else {
   ok('config', 'judge provider ' + judge.provider + ', threshold ' + judge.threshold + ', timeout ' + judge.timeoutMs + ' ms');
+}
+
+// Switched on is not the same as able to answer. A judge whose endpoint is
+// unreachable, or whose key cannot be resolved, returns "do not retrieve" on
+// every turn — the silent channel this layer exists to reopen — while every
+// switch still reads as on. Measured 2026-10-13: the desktop host starts the
+// plugin with a fixed `--env` list that does not carry the provider key, so a
+// chat backend that only read `process.env` would have answered 401 on every
+// turn with nothing in the log to say so.
+const judgeFromProfile = declared.map((d) => d.judge).find((p) => p && p !== 'off' && p !== 'rules') || null;
+const judgeFromEnv = judge.provider !== 'off' && judge.provider !== 'rules' ? judge.provider : null;
+const judgeProvider = judgeFromProfile || judgeFromEnv;
+if (judgeProvider) {
+  // Two views, because they disagree by design: the profiles are what the host
+  // runs, and a shell running this script usually has no judge variables at all.
+  const declaredBlock = declared.find((d) => d.judge === judgeProvider) || {};
+  const base = judgeProvider === 'jev' ? judge.jev : judge.chat;
+  const backend = {
+    url: declaredBlock.judgeUrl || base.url,
+    apiKeyName: declaredBlock.judgeKeyName || base.apiKeyName,
+    apiKey: base.apiKey,
+  };
+  const label = judgeProvider === 'jev' ? 'jev' : 'chat';
+  const loopback = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/.test(String(backend.url || ''));
+  const keyName = backend.apiKeyName || (judgeProvider === 'jev' ? 'OPENCODE_API_KEY' : 'OPENCODE_GO_API_KEY');
+  const key = backend.apiKey || (await resolveApiKey(keyName));
+  if (!backend.url) {
+    bad('config', 'judge provider ' + judgeProvider + ' has no endpoint', 'set judge.' + label + '.url in the profile');
+  } else if (!key && !loopback) {
+    bad('config', 'the judge backend ' + backend.url + ' has no key: every turn would answer 401 and silently degrade to "do not retrieve"',
+      'put ' + keyName + ' in ~/.dsh/.credentials.yaml, or set judge.' + label + '.apiKey in the profile');
+  } else {
+    ok('config', 'judge provider ' + judgeProvider + ' at ' + backend.url + ' (' + (key ? 'key ' + keyName + ' resolved' : 'loopback, no key needed') + ')');
+  }
+}
+
+// A judge that never fires is indistinguishable from a memory system that is
+// switched off, and a switch-level report calls both healthy.
+{
+  const decisions = observed.rows.filter((r) => r.event === 'judge');
+  if (decisions.length > 5) {
+    const fired = decisions.filter((r) => r.verdict === 'fire').length;
+    if (fired === 0) {
+      bad('config', 'the judge answered "do not retrieve" on all ' + decisions.length + ' decisions in ' + days + ' d',
+        'the automatic path is silent from the second turn on. Check the criteria against real messages (npm run label), or the threshold');
+    } else {
+      ok('config', 'judge fired on ' + fired + '/' + decisions.length + ' decisions in ' + days + ' d');
+    }
+  }
 }
 const residentDeclared = declared.some((d) => d.resident === 'true' || d.resident === 'on');
 if (resident.enabled || residentDeclared) ok('config', 'resident cards on, up to ' + resident.limit + ' per session');

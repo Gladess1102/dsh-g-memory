@@ -58,10 +58,16 @@ const limit = Number(valueOf('--limit', '80'));
 const deltaMs = Number(valueOf('--delta', '0')) * 1000;
 const candidates = Number(valueOf('--candidates', '8'));
 const provider = valueOf('--provider', 'auto');
+// The gate floor is a parameter now, and that is the point of the run: the whole
+// question is what the judge does *independently* of a floor that was calibrated
+// on a different corpus. `--gate 3` reproduces the deployed setting, `--gate 0`
+// the cross-encoder's own decision boundary.
+const gateFloor = Number(valueOf('--gate', '3'));
+const midFloor = Number(valueOf('--mid-gate', String(gateFloor)));
 const concurrency = Number(valueOf('--concurrency', '3'));
 const out = valueOf('--out', '');
 
-const policy = resolvePolicy({ gate: 3, midGate: 3, marginGate: 0 });
+const policy = resolvePolicy({ gate: gateFloor, midGate: midFloor, marginGate: 0 });
 const judgeCfg = resolveJudgeConfig({ provider });
 
 // ---------------------------------------------------------------- the corpus

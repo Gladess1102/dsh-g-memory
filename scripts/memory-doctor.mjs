@@ -327,17 +327,31 @@ if (judgeProvider) {
 }
 
 // A judge that never fires is indistinguishable from a memory system that is
-// switched off, and a switch-level report calls both healthy.
+// switched off, and a switch-level report calls both healthy. What this can
+// honestly measure is the *model* layer. `source: 'rules'` is a deterministic
+// short-circuit — an explicit "记得…", a resumed session — decided without asking
+// the backend at all, so counting those as "the judge answered no" reports a
+// healthy deployment as broken the moment its provider changes (measured: the
+// first run after switching `rules` → `chat` called 7 old rules decisions a
+// silent judge). `fallback` means the backend *was* asked and did not answer,
+// which is a different fault with a different fix.
 {
   const decisions = observed.rows.filter((r) => r.event === 'judge');
-  if (decisions.length > 5) {
-    const fired = decisions.filter((r) => r.verdict === 'fire').length;
+  const modelled = decisions.filter((r) => r.source === 'chat' || r.source === 'jev');
+  const fellBack = decisions.filter((r) => r.source === 'fallback');
+  if (modelled.length > 5) {
+    const fired = modelled.filter((r) => r.verdict === 'fire').length;
     if (fired === 0) {
-      bad('config', 'the judge answered "do not retrieve" on all ' + decisions.length + ' decisions in ' + days + ' d',
+      bad('config', 'the judge backend answered "do not retrieve" on all ' + modelled.length + ' decisions in ' + days + ' d',
         'the automatic path is silent from the second turn on. Check the criteria against real messages (npm run label), or the threshold');
     } else {
-      ok('config', 'judge fired on ' + fired + '/' + decisions.length + ' decisions in ' + days + ' d');
+      ok('config', 'judge backend fired on ' + fired + '/' + modelled.length + ' decisions in ' + days + ' d');
     }
+  } else if (modelled.length === 0 && fellBack.length > 5) {
+    bad('config', 'every judge decision in ' + days + ' d fell back to the rules (' + fellBack.length + ')',
+      'the backend is not answering — check the key, the endpoint and the timeout: a judge that cannot answer degrades to silence');
+  } else if (modelled.length > 0) {
+    ok('config', 'judge backend answered ' + modelled.length + ' decision(s) in ' + days + ' d (' + modelled.filter((r) => r.verdict === 'fire').length + ' fired)');
   }
 }
 const residentDeclared = declared.some((d) => d.resident === 'true' || d.resident === 'on');

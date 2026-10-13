@@ -236,8 +236,15 @@ if (declared.length > 0) {
   say('ok', 'config', 'declared in profiles: ' + declared.map((d) => d.profile + ' judge=' + (d.judge || '?') + ' resident=' + (d.resident || '?') + ' gate=' + (d.gate || '?')).join(' | '));
   const wantsJudge = declared.some((d) => d.judge && d.judge !== 'off');
   const wantsResident = declared.some((d) => d.resident === 'true' || d.resident === 'on');
-  if (wantsJudge && !observed.events.has('judge')) {
-    warn('config', 'the profiles enable the judge but no judge decision has been recorded', 'the host has not restarted since the config changed; restart it');
+  // The judge runs from the second turn on: a resident hit answers the opening
+  // turn and returns before the judge is consulted. So "no judge decision" means
+  // "not restarted" only while nothing else of the new code has run — reporting it
+  // as a restart problem after the resident layer has demonstrably fired sends a
+  // healthy deployment looking for a fault that is not there.
+  if (wantsJudge && !observed.events.has('judge') && !observed.events.has('resident')) {
+    warn('config', 'the profiles enable the judge but neither it nor the resident layer has run', 'the host has not restarted since the config changed; restart it');
+  } else if (wantsJudge && !observed.events.has('judge')) {
+    say('ok', 'config', 'the judge has not been asked yet — the resident layer answers opening turns, so the judge runs from the second turn on');
   }
   if (wantsResident && !observed.events.has('resident')) {
     warn('config', 'the profiles enable resident cards but no resident decision has been recorded', 'the host has not restarted since the config changed; restart it');

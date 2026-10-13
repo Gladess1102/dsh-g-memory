@@ -70,6 +70,23 @@ Two findings worth knowing:
    rank 1, while the fused top-20 is 8/8. Getting the right unit *into the
    candidate pool* is this layer's job; choosing the answer is the consumer's.
 
+### When a result arrives late
+
+The automatic path is split in two on purpose: the inbox event starts embedding,
+retrieval and synthesis in the background, and `pre-step` reads whatever is ready
+without ever awaiting it. The pipeline takes 2.2-11 s (the reranker and the deep
+pool dominate; the embedding itself is about 10 ms) while a plain
+question-and-answer turn has exactly one step to consume from.
+
+That used to mean a recall which finished *after* its turn's last step was thrown
+away by the next message — recorded as `late-drop`, and gone. A tool loop hid it,
+because its later steps eventually consume. A finished-but-unconsumed result is now
+carried into the next turn instead: one turn of staleness, no added latency. The
+carry-over is offered only while the next turn's own recall is still running, is
+never injected into a turn that was already decided against, expires with the
+result TTL, and is logged (`late-drop` with `why: carried-to-next-turn`, then
+`inject` with `why: carried`).
+
 ## Storage
 
 int8 quantisation is effectively lossless here: mean cosine distortion
@@ -298,12 +315,27 @@ request is not speculation), but it does respect the `DSH_G_MEMORY_ENABLED` kill
 switch. And it is registered only when the profile has the commands service; a
 profile without it still gets the tool and automatic recall.
 
+### Seeing the tools in a PTC profile
+
+DSH 0.2 has two tool modes, and in the Program-Tool-Call one the request's `tools`
+array contains **only `run_code`**. That is the design, not a broken mount: under
+`mode: 'ptc'` the native tool schemas are omitted from the request by the host
+itself, and `memory_recall` / `memory_note` / `memory_forget` are handed to the
+model as SDK bindings inside a `run_code` program instead. Verified here against
+both modes — a native-profile session carries all three in the `tools` array, and
+PTC sessions call them through `run_code` dispatch (8 successes, 0 errors).
+
+So a missing name in a PTC session's `tools` array is **not** evidence that the
+plugin failed to mount. Check the SDK declarations in the system prompt, or run
+`plugincheck`.
+
 ## Network and privacy
 
 | What | Where it goes | When |
 |---|---|---|
 | Chunk text for embedding | `DSH_G_MEMORY_EMBED_URL` (default `http://127.0.0.1:11439`) | Every `build`, and every query |
 | Query + top candidates for synthesis | `DSH_G_MEMORY_LLM_URL` | Only if you set that variable |
+| The turn's own messages, redacted, for the judge | the chat judge endpoint (`DSH_G_MEMORY_JUDGE_CHAT_URL`) | On every turn the judge is asked; resident cards answer the opening turn and never reach it |
 
 Two consequences worth stating plainly:
 
@@ -331,7 +363,14 @@ All optional; defaults suit a single-machine setup.
 |---|---|---|
 | `DSH_G_MEMORY_ENABLED` | `on` | Master kill switch. `off` disables both tool and auto-recall. |
 | `DSH_G_MEMORY_AUTO` | `on` | Automatic recall. `off` keeps only the explicit tool. |
-| `DSH_G_MEMORY_AUTO_MIN_SCORE` | `0.01639` | Minimum fused score before anything is injected. RRF scores are quantised: one arm at rank 0 scores `1/61 = 0.01639`, both arms at rank 0 score `2/61 = 0.03279`, and **nothing falls between**. The default is the floor, so any single-arm hit counts; raise it to `0.03279` to require that both arms agree. |
+| `DSH_G_MEMORY_JUDGE` | `off` | Judgement layer: `off`, `rules`, `chat` or `jev`. Decides whether a turn wants memory at all, **before** retrieval runs; a turn it skips never reaches the gate. `DSH_G_MEMORY_AUTO_MIN_SCORE` used to be documented here and had no consumer — the automatic path stopped reading a fused-score floor when the policy gate replaced it. |
+| `DSH_G_MEMORY_JUDGE_THRESHOLD` | `0.5` | Below this confidence a non-explicit verdict does not fire. |
+| `DSH_G_MEMORY_JUDGE_TIMEOUT_MS` | `8000` | Decision timeout. Every judge failure degrades to "do not retrieve", never to "retrieve everything". |
+| `DSH_G_MEMORY_JUDGE_CHAT_URL` / `_MODEL` / `_KEY_NAME` / `_SESSION` | the opencode-go gateway / `deepseek-flash` / `OPENCODE_GO_API_KEY` / `dsh-g-memory` | The `chat` backend. The key name is resolved from the environment first and then from `$DSH_HOME/.credentials.yaml` — a host that starts a plugin with a fixed `--env` list will not have it in the environment, and a judge that answers 401 degrades to "do not retrieve" silently. |
+| `DSH_G_MEMORY_RESIDENT` | `off` | Resident cards: the working set a session starts with, ranked by names the opening message and the workspace share — never by retrieval score. |
+| `DSH_G_MEMORY_RESIDENT_LIMIT` | `2` | Cards per session. |
+| `DSH_G_MEMORY_RESIDENT_MIN_SCORE` | `0.5` | Below this a card has no deterministic reason to be there. |
+| `DSH_G_MEMORY_RESIDENT_ENTRY_CHARS` / `_MAX_CHARS` | `320` / `1600` | Per-card and whole-block budgets. The injection frame alone is 792 characters, so a card that does not fit is trimmed rather than dropped. |
 | `DSH_G_MEMORY_EMBED_URL` | `http://127.0.0.1:11439` | Embedding endpoint. |
 | `DSH_G_MEMORY_EMBED_MODEL` | `embed-gemma` | Model name sent to the endpoint. |
 | `DSH_G_MEMORY_EMBED_QUERY_PREFIX` | *(empty)* | Instruction prepended to every **query** before it is embedded. EmbeddingGemma 2 wants `task: question answering | query: ` (or `task: search result | query: `); leave empty for a model that wants no prefix. |

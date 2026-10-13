@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.11.0 — 2026-10-13
+
+**判定层接管"这轮要不要记忆"，闸门退回"展示几条"；迟到的检索结果不再被下一条消息吃掉。**
+
+背景是一整天的实测，两条结论都推翻了此前的方案假设：
+
+- 自动路径连续 5 天 0 注入。原因不是阈值定高了，而是**用检索分数决定"要不要记忆"这件事在真实分布上不成立**：标定集（从记忆库倒着造题）rerank top1 中位 5.18，真实聊天消息中位 -1.49；用 40 条真实消息复跑，top1 全部落在 0.02-0.03，`gate: 3` 砍掉 100%，`gate: 0` 放行 39/39。
+- 自动路径的两段式（inbox 后台跑管线 + pre-step 同步消费）有一个结构性缺口：管线 2.2-11 s，而纯问答轮只有一次 step。结果在轮次结束后才就绪时，被下一条消息覆盖成 `late-drop` ——工具循环掩盖了它（后续 step 最终会消费）。
+
+### Added — 判定层：先问"这轮要不要看记忆"，再决定检索
+
+- `lib/judge.mjs`：`rules`（确定性措辞/会话恢复，零网络）、`chat`（任意 OpenAI 兼容端点）、`jev`（TypeSafe System One）三个后端；判定在 embedding/recall/rerank **之前**，skip 时整条管线不跑。
+- 类别定义带**反例**："太AI味了""继续吧""听不懂，演示一个给我看看"都算 none。没有反例时判定模型会在 40 条真实消息里误 fire 21 条。
+- 失败策略统一为**"不检索"**：后端超时、返回散文而非 JSON、端点 451/503，一律降级，绝不降级成"全都检索"。
+- **默认 `off`**，不改变任何现有部署的行为；本部署显式开启。
+
+### Added — 常驻卡片：会话起点不靠检索分数
+
+- `lib/resident.mjs`：首轮注入最多 2 张卡片，排序由**确定性信号**主导（开场消息/工作区与卡片共享的路径、项目名、标识符），cosine 只作为封顶加成；"只有 fresh"不构成入选理由。
+- 卡片放不进预算时**截断**而不是整张丢弃——此前 frame 792 字符 + 卡片 580 字符会让这一层在它最该工作的那个工作区里静默失效。
+
+### Added — 迟到的结果补投到下一轮（carry-over）
+
+- 完成但未被消费的结果不再被下一条消息覆盖：`start()` 把它挂到 `carried`，`take()` 在**本轮管线仍在跑**时注入它。仅此一种情况会补投——本轮已判定"不注入"（judge skip / 闸门 drop / 检索为空）时不覆盖该判定。
+- 补投有 TTL、只注入一次、仍然过 `repeat-suppressed`；`inject` 事件新增 `why`（`ready` vs `carried`），`late-drop` 新增 `carried-to-next-turn`，doctor 因此能把"被救回"和"丢失"分开计数。
+- 不做 pre-step 有界等待：管线 2.2-11 s，等 250 ms 只救得了 14 ms 就绪的 resident，救不了主要矛盾。
+
+### Fixed — 判定层的密钥、隐私与地域
+
+- **密钥可以从 DSH 凭据文件解析**（`apiKeyName`，env 优先）。桌面 host 用固定的 `--env` 列表启动插件，不含 `OPENCODE_GO_API_KEY`；只读环境变量的写法会让每条消息 401→降级→静默，而所有开关看起来都是开着的。
+- 判定输入过 `redact()`（与 synthesis 同一组规则），在发送前脱敏；只发消息片段，不发记忆内容。
+- `auto` 不再尝试 JEV：本环境每次请求都被 451 地域拒绝，白等约 0.9 s/条。后端保留，`provider: 'jev'` 仍可用。
+- 判定在后台管线里跑，不在 `pre-step` 关键路径上，实测 1.5-5 s/条不影响任何一轮的响应延迟。
+
+### Fixed — 让失败可见
+
+- `late-drop`（结果就绪却没人消费）、`gate` 的 `top1` + `reason`、`pass` 的 `why`：4000+ 条无信息的 pass 变成可回答"是没检索完、还是决定不注入、还是轮次翻篇了"。
+- judge fire 而检索无果时注入一行提示，把决定交还给唯一能读对话的一方：模型自己调 `memory_recall`。
+- `memory-doctor` 新增三项：judge 后端**可达性**（无密钥的非 loopback 端点会被判 bad）、judge 的 fire 率（N 次判定全不 fire = 自动路径实质静默）、carry-over 与丢失的分开计数。
+
+### Changed — 部署层：闸门 3 → 0
+
+- 本部署 `policy.gate`/`midGate` 从 3 改为 0（交叉编码器自己的决策边界）。分数不再决定"要不要记忆"，只决定展示几条（tier/brief/full/maxEntries 不变）。
+- profile 的 judge 从 `rules` 改为 `chat`（deepseek-flash）。实测依据：同一批 14 条真实消息，本机 8123 的 MiniCPM5-2B **0 条 fire**（1.2-3.7 s/条），接上等于全静默；deepseek-flash 10 条 fire。
+
+### Removed
+
+- `DSH_G_MEMORY_AUTO_MIN_SCORE` / `defaultAutoConfig().minScore`：声明了、README 文档化了、**没有任何消费者**——自动路径自并入 `selectByPolicy` 起就不再读融合分地板。无消费者的旋钮比没有旋钮更糟（同 `embed.batchSize` 的处置）。
+
+### Tests
+
+- 新增 `scripts/test-carry-over.mjs`（10 项：一次性消费、pending 期间补投、本轮结果优先、已判定轮次不补投、TTL、未布防不补投、重复抑制、arm 搬运、过期、dispose），接入 `npm test`。
+- `test-judge.mjs` 重写 auto 相关断言（`auto` 不再试 JEV）、新增凭据解析与脱敏两项；`eval-judge-offline.mjs` 新增 `--gate`/`--mid-gate`，让"判定层 vs 闸门"的矩阵能在任意地板上复跑。
+
+### Packaging
+
+- `files` 白名单从整个 `scripts/` 改为 `scripts/*.mjs` + 三个公开用例集：`.gitignore` 里的个人评测数据（`cases-personal.local.json`）此前会被 `npm pack` 打进发布包。已验证 tarball 0 命中。
+
 ## 0.10.0 — 2026-10-08
 
 **换嵌入模型暴露出一整类静默错误：同样 768 维，不同的向量空间。** EmbeddingGemma 2 要求按角色加任务指令（查询侧 `task: question answering | query: `，文档侧 `title: none | text: `）。而"要不要加、该加哪条、哪条路径忘了加"这三件事，之前没有任何东西会报警——宽度一样、索引照读、报表照出，错的只是结果。

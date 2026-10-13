@@ -4,9 +4,10 @@
  *
  * The layer's whole job is to fail safely, so the interesting cases are the
  * failures: System One returns 451 (measured behaviour from a mainland-China
- * egress), the chat backend returns prose instead of JSON, both are down. In
- * every one of those the answer must be "do not retrieve" — a judge that
- * degrades into "retrieve everything" would be worse than no judge at all.
+ * egress, and the reason `auto` no longer routes through it), the chat backend
+ * returns prose instead of JSON, the backend is down. In every one of those the
+ * answer must be "do not retrieve" — a judge that degrades into "retrieve
+ * everything" would be worse than no judge at all.
  *
  * Hermetic: two stub endpoints on ephemeral ports, no network, no model.
  *
@@ -15,6 +16,9 @@
 
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { judgeTurn, judgeWithJev, judgeWithChat, resolveJudgeConfig, ruleVerdict, buildState, KIND_CRITERIA, resetJudgeHealth } from '../lib/judge.mjs';
 
 /** Every request the stubs saw, so we can assert what was sent. */
@@ -89,7 +93,9 @@ await check('an explicit "remember…" never reaches a model', async () => {
 });
 
 await check('system one is asked with a choice question and a session header', async () => {
-  const v = await judgeTurn({ message: '帮我看看那个索引重建的脚本' }, { config: cfg() });
+  // Selected by name: `auto` no longer routes through System One (see the check
+  // below), but the backend has to keep working for a deployment where it does.
+  const v = await judgeTurn({ message: '帮我看看那个索引重建的脚本' }, { config: cfg({ provider: 'jev' }) });
   assert.equal(v.source, 'jev');
   assert.equal(v.kind, 'recall_project');
   assert.equal(v.fire, true);
@@ -103,8 +109,7 @@ await check('system one is asked with a choice question and a session header', a
   assert.ok(!('input' in req.body), 'system one takes state, not messages');
 });
 
-await check('a 451 from system one falls through to chat', async () => {
-  jevResponder = () => [451, { error: { type: 'server_error', message: 'Upstream request failed: Endpoint is unavailable.' } }];
+await check('auto asks chat directly and never spends a request on system one', async () => {
   const failuresSeen = [];
   // A message with no rule-shaped wording: anything containing "上次" or "记得"
   // is answered by the rules layer without spending a request, which is the
@@ -112,8 +117,19 @@ await check('a 451 from system one falls through to chat', async () => {
   const v = await judgeTurn({ message: '帮我看看索引重建脚本里的重排部分' }, { config: cfg(), onFailure: (e, layer) => failuresSeen.push(layer) });
   assert.equal(v.source, 'chat');
   assert.equal(v.fire, true);
+  assert.deepEqual(failuresSeen, [], 'nothing failed: system one was never asked');
+  assert.equal(seen.length, 1, 'one request, straight to chat');
+  assert.equal(seen[0].endpoint, 'chat');
+});
+
+await check('an explicitly selected system one that is unavailable degrades to the rules', async () => {
+  jevResponder = () => [451, { error: { type: 'server_error', message: 'Upstream request failed: Endpoint is unavailable.' } }];
+  const failuresSeen = [];
+  const v = await judgeTurn({ message: '帮我看看索引重建脚本里的重排部分' }, { config: cfg({ provider: 'jev' }), onFailure: (e, layer) => failuresSeen.push(layer) });
+  assert.equal(v.source, 'fallback');
+  assert.equal(v.fire, false, 'a broken judge degrades to not retrieving');
   assert.deepEqual(failuresSeen, ['jev']);
-  assert.equal(seen.length, 2, 'system one then chat');
+  assert.equal(seen.length, 1, 'the explicit choice is not silently overridden by chat');
 });
 
 await check('chat is asked with thinking disabled and parsed from JSON', async () => {
@@ -126,8 +142,7 @@ await check('chat is asked with thinking disabled and parsed from JSON', async (
   assert.equal(req.body.temperature, 0);
 });
 
-await check('both backends down degrades to "do not retrieve"', async () => {
-  jevResponder = () => [451, { error: 'unavailable' }];
+await check('the chat backend down degrades to "do not retrieve"', async () => {
   chatResponder = () => [503, { error: 'overloaded' }];
   const v = await judgeTurn({ message: '今天天气不错' }, { config: cfg() });
   assert.equal(v.source, 'fallback');
@@ -154,7 +169,7 @@ await check('a choice below the confidence threshold does not fire', async () =>
 
 await check('an unknown choice is treated as none', async () => {
   jevResponder = () => [200, { answers: { memory: { type: 'choice', choice: 'something_else', confidence: 0.99 } } }];
-  const v = await judgeTurn({ message: '随便聊聊' }, { config: cfg() });
+  const v = await judgeTurn({ message: '随便聊聊' }, { config: cfg({ provider: 'jev' }) });
   assert.equal(v.fire, false);
   assert.equal(v.kind, 'none');
 });
@@ -189,12 +204,52 @@ await check('the rules channel alone can be selected', async () => {
 await check('a persistently failing system one trips the breaker instead of retrying per message', async () => {
   jevResponder = () => [451, { error: 'Endpoint is unavailable.' }];
   resetJudgeHealth();
+  const verdicts = [];
   for (let i = 0; i < 4; i += 1) {
-    await judgeTurn({ message: '索引重建脚本第 ' + i + ' 个问题' }, { config: cfg() });
+    verdicts.push(await judgeTurn({ message: '索引重建脚本第 ' + i + ' 个问题' }, { config: cfg({ provider: 'jev' }) }));
   }
   const jevCalls = seen.filter((s) => s.endpoint === 'jev').length;
   assert.equal(jevCalls, 3, 'three attempts, then the layer is skipped');
-  assert.ok(seen.some((s) => s.endpoint === 'chat'), 'chat still answers');
+  assert.ok(verdicts.every((v) => v.fire === false), 'every answer is "do not retrieve"');
+  assert.equal(verdicts[3].source, 'fallback', 'the fourth never reached the wire');
+});
+
+await check('the key comes from DSH credentials when the environment has none', async () => {
+  // The desktop host starts this plugin with a fixed --env list that does not
+  // include the provider key, so "read process.env" is not a working
+  // configuration there: every turn would answer 401, degrade to "do not
+  // retrieve", and look healthy from the outside.
+  const home = await mkdtemp(join(tmpdir(), 'dsh-judge-home-'));
+  await writeFile(join(home, '.credentials.yaml'), 'refs:\n  TEST_JUDGE_KEY: from-credentials\n');
+  const savedHome = process.env.DSH_HOME;
+  const savedKey = process.env.OPENCODE_GO_API_KEY;
+  process.env.DSH_HOME = home;
+  delete process.env.OPENCODE_GO_API_KEY;
+  try {
+    const v = await judgeTurn({ message: '帮我看看索引重建脚本里的重排部分' }, {
+      config: resolveJudgeConfig({
+        provider: 'chat',
+        chat: { url: chatUrl, model: 'deepseek-flash', apiKey: '', apiKeyName: 'TEST_JUDGE_KEY', session: 'test-session' },
+      }),
+    });
+    assert.equal(v.source, 'chat');
+    const req = seen.find((s) => s.endpoint === 'chat');
+    assert.equal(req.headers.authorization, 'Bearer from-credentials');
+  } finally {
+    if (savedHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = savedHome;
+    if (savedKey !== undefined) process.env.OPENCODE_GO_API_KEY = savedKey;
+  }
+});
+
+await check('credential-shaped text is redacted before it reaches a backend', async () => {
+  const secret = 'sk-live-abcdefghijklmnopqrstuvwx';
+  const mail = 'someone@example.com';
+  const v = await judgeTurn({ message: '我的 key 是 ' + secret + '，邮箱 ' + mail + '，看看这个脚本' }, { config: cfg({ provider: 'chat' }) });
+  assert.equal(v.source, 'chat');
+  const sent = JSON.stringify(seen.find((s) => s.endpoint === 'chat').body);
+  assert.ok(!sent.includes(secret), 'the secret must not leave this machine');
+  assert.ok(!sent.includes(mail), 'nor the address');
+  assert.match(sent, /redacted-key/);
 });
 
 await check('ruleVerdict is usable on its own (the label script reuses it)', async () => {

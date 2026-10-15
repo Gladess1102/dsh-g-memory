@@ -729,7 +729,7 @@ async function main() {
             data: {
               name: 'write',
               arguments: JSON.stringify({
-                file_path: '/Users/yangyuxin/project/dist/bundle.min.js',
+                file_path: '/home/user/project/dist/bundle.min.js',
                 content: huge,
               }),
             },
@@ -739,7 +739,7 @@ async function main() {
           assert.ok(chars < 20_000, `a 200 KB write must not enter at full size, got ${chars}`);
           assert.ok(units.length <= 12, `and it must not explode into many units, got ${units.length}`);
           assert.ok(
-            units.some((u) => u.text.includes('[write] /Users/yangyuxin/project/dist/bundle.min.js')),
+            units.some((u) => u.text.includes('[write] /home/user/project/dist/bundle.min.js')),
             'the unit must still name the file it came from',
           );
         });

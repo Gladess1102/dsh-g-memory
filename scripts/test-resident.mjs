@@ -107,7 +107,7 @@ const eventsFor = async (agent) => {
       .filter((e) => e.session === agent);
   } catch { return []; }
 };
-const WORKSPACE = '/Users/yangyuxin/.dsh/local-keep/dsh-g-memory';
+const WORKSPACE = process.env.DSH_G_MEMORY_TEST_WORKSPACE || process.cwd();
 const makeRecall = (resident, cwd = WORKSPACE) => new AutoRecall({ logger: { debug() {}, info() {} } }, {
   indexDir: dir,
   embed: { url: embedUrl, model: 'fixture' },

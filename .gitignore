@@ -20,3 +20,7 @@ stats.jsonl
 eval-*.json
 cases-*.local.json
 cases.local.json
+
+# Local runtime artifacts of this deployment (memory cards, telemetry, probes).
+# These hold real session content; never ship them.
+.verify/

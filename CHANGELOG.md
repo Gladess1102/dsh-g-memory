@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.12.0 — 2026-10-17
+
+**索引里近半数"用户原话"其实是 harness 自己说的话：来源判据用的是黑名单，而 producer kind 一直在增长。**
+
+给索引加来源字段（`sourceKind`）的当天，新写的审计脚本第一次跑就把它报了出来：`role=user` 的 3,529 行里有 **1,729 行（49%）** 来自 `agent-instructions`、`agent-message`、`subagent-settled`、`compact-checkpoint`、`tool-jobs`、`ptc-mode`、`team-message`、`skill-catalog`、`runtime-context`、`goal`、`model-selection`、`time-context` 等 kind，其中 212 行是本插件自己的注入块。它们被当作"用户说过的话"存进索引，再被检索回来。
+
+根因是判据的方向：`isInjected()` 列的是"不要什么"（`plugin` / `system` / `reminder` / `plugin:*`），而 harness 的 producer kind 集合随版本增长——**每一次新增在这里都是不可见的**。
+
+### Added — 来源字段与三个工具
+
+- `IndexedUnit.sourceKind`：生产事件的 `source.kind`。`null`（事件本就没有）与 `undefined`（字段引入前写入、尚未回读）严格区分——"没测"不是"干净"。
+- `scripts/audit-index-sources.mjs`：三态判据 `pass` / `unverified` / `fail`，`unverified` 明确不等于通过。
+- `scripts/prune-injected-rows.mjs`：**从日志反推**被拒绝内容的 hash 再剔除，不依赖索引自述；删掉的行留档到 `pruned-injected-*.ndjson` 可回溯。
+- `scripts/backfill-source-kinds.mjs`：只补字段、**零 embedding 调用**。（`build` 在 model 名与索引记录不一致时会全量重编码 29,717 个 unit，约 54 分钟，且与正在使用的召回争抢端点。）
+
+### Fixed — 判据反转为 fail-closed 白名单
+
+- 只有 `kind === 'user'` 算真人；其余一律拒绝。唯一例外是**完全不带 kind** 的消息：实测 2,615 条 `user/message` 事件全部带 kind，所以"没标注"不等于"是注入"；而两种误判代价不对称——**误杀真人=永久丢记忆，放进一条无标注注入=审计里一个可清理的数字**。
+- `EXTRACTOR_VERSION` 2 → 4：升级后自动全量重读，只修正元数据、不重编码。
+
+### 验证
+
+- 现库 `audit-index-sources`：从 `UNVERIFIED` 到 **PASS**；删除 **1,645** 行注入，真人 `user` 行 1,800 行全部带来源。
+- `npm test`：live index 套件 11 项全部通过；残留 4 个红灯与本次改动前**逐条一致**（用 `git worktree` 对 HEAD 建基线比对过，`IDENTICAL_FAILURES`）。
+
 ## 0.11.0 — 2026-10-13
 
 **判定层接管"这轮要不要记忆"，闸门退回"展示几条"；迟到的检索结果不再被下一条消息吃掉。**

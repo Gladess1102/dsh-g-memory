@@ -385,6 +385,8 @@ All optional; defaults suit a single-machine setup.
 | `DSH_G_MEMORY_MAX_LOG_BYTES` | `268435456` | Refuse to decompress a session log past this size. |
 | `DSH_G_MEMORY_MAX_INDEX_BYTES` | `536870912` | Same ceiling for the index. |
 | `DSH_G_MEMORY_AUTO_CANDIDATES` | `8` | Candidate pool depth handed to synthesis. |
+| `DSH_G_MEMORY_EXACT` | `on` | Exact arm (VCP 2.0's second stack): quoted phrases, dates, tags and file paths are matched literally and fused as a third RRF arm. `off` restores the two-arm behaviour. |
+| `DSH_G_MEMORY_TIMELINE_BOOST` | `0.15` | Month-tier nudge (VCP 2.0's VCPTimeLine): a fused hit from a month whose digest matches the query is multiplied by `1 + n`. `0` disables it. |
 | `DSH_G_MEMORY_SYNTHESIS_MAX_CHARS` | `1200` | Synthesis output cap. |
 | `DSH_G_MEMORY_LLM_TIMEOUT_MS` | `60000` | Synthesis request timeout. |
 | `DSH_G_MEMORY_LLM_KEY_NAME` | `OPENCODE_GO_API_KEY` | Credential to look up for a non-loopback endpoint (env, else `$DSH_HOME/.credentials.yaml`). |

@@ -329,6 +329,34 @@ So a missing name in a PTC session's `tools` array is **not** evidence that the
 plugin failed to mount. Check the SDK declarations in the system prompt, or run
 `plugincheck`.
 
+### Calling memory from another agent
+
+The CLI is the cross-tool door. Any local agent that can run a shell command can
+query the same index the harness uses, without mounting the plugin:
+
+```bash
+node ~/.dsh/local-keep/dsh-g-memory/bin/dsh-g-memory.mjs recall "上次我们怎么处理 X 的" --top 3 --json
+```
+
+`--json` prints one object on stdout and nothing else:
+
+```json
+{ "query": "…",
+  "index": { "dir": "…", "units": 41934, "dim": 768, "model": "embeddinggemma-2" },
+  "results": [ { "score": 0.0164, "role": "assistant", "session": "…", "seq": 42, "time": 1792, "text": "…" } ] }
+```
+
+Two things make it usable outside the harness:
+
+- **it adopts the index's recorded task prefixes** (`docPrefix` / `queryPrefix`) when the
+  environment does not set them, so a bare shell does not silently compare text against a
+  different embedding space;
+- it needs only the embedding endpoint (`DSH_G_MEMORY_EMBED_URL`, default
+  `http://127.0.0.1:11439`) reachable — no harness, no session, no profile.
+
+This is deliberately one-way: another agent can read, but writing still goes through
+`memory_note` (or the cards file) so provenance and governance stay in one place.
+
 ## Network and privacy
 
 | What | Where it goes | When |

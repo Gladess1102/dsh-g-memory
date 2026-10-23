@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.13.1 — 2026-10-24
+
+**CLI 成为跨工具的门：`recall` 自动采用索引里记录的 task 前缀，并新增 `--json`。**
+
+- 修：`dsh-g-memory recall` 在普通 shell 里没有 `DSH_G_MEMORY_EMBED_*_PREFIX` 时，
+  会拿裸文本去比对按前缀编码的向量（同宽、无报错、结果无意义）。现在索引 header 里
+  记录的 `docPrefix` / `queryPrefix` 会被自动采用；环境变量仍然优先。
+- 加：`recall --json` 输出单个 JSON 对象（query / index / results），供其他 agent 通过
+  shell 调用；人类输出保持不变。
+- 文档：README 增补「Calling memory from another agent」。
+
+验证：在无 DSH 环境的 shell 里 `node bin/dsh-g-memory.mjs recall "搜索计费改成了什么" --json`
+返回 2 条结果且 JSON 可解析（此前会报 `[space]` 并返回无意义分数）。
+
 ## 0.13.0 — 2026-10-24
 
 **2026-10-24 审查（230 个会话、639 条注入条目、72 块人工判读）的结论：卡片是唯一被证明有效的层，而注入口没有质量守卫——碎片、截断、自召回、失败合成与不可用的卡片地板同时存在。本版把这些守卫一次补齐。**

@@ -82,6 +82,10 @@ function parseArgs(argv) {
     else if (token === '--out') args.out = value('--out');
     else if (token === '--limit') args.limit = count('--limit');
     else if (token === '--top') args.top = count('--top');
+    // Machine-readable recall for callers that are not a human at a terminal:
+    // another agent shells out to this command, so stdout must be one JSON object
+    // and nothing else.
+    else if (token === '--json') args.json = true;
     // `distill` documented these three and read them, but nothing parsed them, so
     // the error message told the operator to pass a `--url` that could not work.
     else if (token === '--recent') args.recent = count('--recent');
@@ -104,7 +108,7 @@ function usage() {
                --limit N   index at most N session logs
                --fresh     ignore the previous index and checkpoint; re-embed everything
   stats        Show index composition and on-disk size
-  recall       Query the index:  recall "your question" [--top 5] [--out DIR]
+  recall       Query the index:  recall "your question" [--top 5] [--out DIR] [--json]
   selfcheck    Verify the embedding endpoint and report its dimension
   plugincheck  Load the Host half through a strict fake registry, without
                restarting DSH. Fails when the tool definition is one the real
@@ -622,21 +626,57 @@ async function cmdRecall(args) {
   if (!query) { usage(); process.exitCode = 1; return; }
   const dir = args.out ? resolve(args.out) : defaultIndexDir();
   const top = args.top ?? 5;
-  const cfg = resolveConfig();
 
   const index = await readIndex(dir);
+  // The index header records the space it was built in. A standalone caller
+  // (another agent shelling out to this command) has none of the DSH_G_MEMORY_*
+  // environment, and comparing bare text against prompted vectors returns
+  // plausible but meaningless scores. Adopt the recorded prefixes unless the
+  // operator set them explicitly — this is what makes the CLI usable outside
+  // the harness, where the profile config is the only place those values live.
+  const space = {};
+  if (index.data.docPrefix !== undefined && !process.env.DSH_G_MEMORY_EMBED_DOC_PREFIX) {
+    space.docPrefix = index.data.docPrefix;
+  }
+  if (index.data.queryPrefix !== undefined && !process.env.DSH_G_MEMORY_EMBED_QUERY_PREFIX) {
+    space.queryPrefix = index.data.queryPrefix;
+  }
+  const cfg = resolveConfig(space);
   assertIndexSpace(index, cfg);
   warnQuerySpace(index, cfg, 'recall');
-  console.log(`[index] ${index.size} units, dim ${index.dim}, from ${dir}`);
-  console.log(`[query] ${query}\n`);
 
   const [raw] = await embedBatch([query], cfg, { purpose: 'query' });
   const results = index.recall(prepareQueryVector(raw), query, { k: top });
-  for (const { index: i, score } of results) {
+  const rows = results.map(({ index: i, score }) => {
     const unit = index.unit(i);
-    const when = unit.time ? new Date(unit.time).toISOString().slice(0, 16).replace('T', ' ') : '?';
-    console.log(`── rrf ${score.toFixed(4)}  [${unit.role}] ${when}  session ${unit.session.slice(0, 20)}`);
-    console.log(`   ${unit.text.slice(0, 400)}`);
+    return {
+      score: Number(score.toFixed(6)),
+      role: unit.role,
+      session: unit.session,
+      seq: unit.seq,
+      time: unit.time,
+      text: unit.text,
+    };
+  });
+
+  // One JSON object on stdout and nothing else, so a caller can pipe it into a
+  // parser. The human form keeps the index banner; the machine form does not.
+  if (args.json) {
+    console.log(JSON.stringify({
+      query,
+      index: { dir, units: index.size, dim: index.dim, model: index.data.model },
+      results: rows,
+    }, null, 2));
+    return;
+  }
+
+  console.log(`[index] ${index.size} units, dim ${index.dim}, from ${dir}`);
+  console.log(`[query] ${query}\n`);
+
+  for (const row of rows) {
+    const when = row.time ? new Date(row.time).toISOString().slice(0, 16).replace('T', ' ') : '?';
+    console.log(`── rrf ${row.score.toFixed(4)}  [${row.role}] ${when}  session ${String(row.session).slice(0, 20)}`);
+    console.log(`   ${row.text.slice(0, 400)}`);
     console.log();
   }
 }

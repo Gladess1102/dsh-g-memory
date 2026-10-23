@@ -95,14 +95,20 @@ await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const url = `http://127.0.0.1:${server.address().port}`;
 
 // ── fixture index, same vector function ──────────────────────────────────────
-const MEMORY = '生产记忆库的嵌入模型已切换为 EmbeddingGemma-300M，体积减半。';
-const UNRELATED = '南极科考站的柴油发电机每两千小时维护一次。';
+// Both texts are over 60 characters on purpose: injection-side content filtering
+// (lib/quality.mjs, minContentChars) drops shorter entries as fragments, so a terse
+// fixture would be filtered out before the gate ever saw it and every check below
+// would pass for the wrong reason — nothing recalled, nothing to assert.
+const MEMORY = '生产记忆库的嵌入模型已切换为 EmbeddingGemma-300M，这次嵌入模型换代让维度保持不变而体积减半，查询侧与文档侧的前缀也要一起改。';
+const UNRELATED = '南极科考站的柴油发电机每两千小时维护一次，备用机组的保养记录由驻站机械师手写归档，和软件项目、向量检索、会话记录都扯不上关系。';
 // Four units, and the count matters: the head-margin rule only applies once three
 // candidates have been scored, so a two-unit fixture silently skipped it — the
 // degraded-path check below passed for the wrong reason until a mutation showed it.
+// Their length matters for the same reason as MEMORY's: all four must survive the
+// content filter, or the margin rule is fed fewer than three candidates.
 const FILLER_UNITS = [
-  '这个夹具需要足够的单元数，否则头部间距规则根本不会生效。',
-  '第四段用于凑够候选数量，让闸门真的去读前几名的分差。',
+  '这个夹具需要足够的单元数，否则头部间距规则根本不会生效，所以前几段都刻意写长，只为了凑出可以被比较的候选数量，没有别的用途。',
+  '第四段同样用于凑够候选数量，让闸门真的去读前几名的分差，而不是在样本不足的时候悄悄跳过这条规则，测出来的绿灯也就没有意义。',
 ];
 const dir = await mkdtemp(join(tmpdir(), 'gm-hermetic-'));
 const units = [MEMORY, UNRELATED, ...FILLER_UNITS].map((text, i) => ({

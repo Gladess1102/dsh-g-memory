@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.13.0 — 2026-10-24
+
+**2026-10-24 审查（230 个会话、639 条注入条目、72 块人工判读）的结论：卡片是唯一被证明有效的层，而注入口没有质量守卫——碎片、截断、自召回、失败合成与不可用的卡片地板同时存在。本版把这些守卫一次补齐。**
+
+审查证据：`reports/review-20261024/`（timeline / recall-quality / code-audit / plan）。
+
+### Added — 内容质量与卡片降级
+
+- `lib/quality.mjs`：`contentRejectReason`（`too-short` / `json` / `tool-fragment` / `path-only` / `log-dump` / `too-long`）、`pickDegradedCards`（top1 + floor + margin，最多一张，标 `unverified`）、`formatLocalTime`。该模块不 import inject/policy，两条召回路径共用同一份判定。
+- 注入侧内容过滤：`minContentChars: 60`、`maxEntryChars: 1200`；超长条目**整条丢弃**，不再截断成半句。
+- 卡片降级地板重标定：`cardMinSimilarity 0.35 → 0.68` + `cardMargin 0.02`。0.35 是 2026-10-02 在 15 张卡上的标定，换到 EmbeddingGemma 2 + 184 张卡后已恒真（随机 token 8/8 通过，cosine 下界约 0.58）。`scripts/eval-card-gate.mjs` 实测 0.68/0.02：负样本 **0/13** 通过、正样本 9/10 保留。
+- self-recall 排除：`retrieve(query, limit, { excludeSession })`，自动路径传当前 agent；`isSameSession` 桥接 agent id 与 `session-<uuid>` 两种写法，缓存键携带被排除的 session。
+- 注入遥测：`inject` 事件新增 `ids`（cardId / unit hash）、`top1`、`kept`、`kinds`、`synthesis`；`gate` 事件增 `droppedReasons`；`/recall` 的 `arm()` 也可携带身份。
+- judge 失败分类：`classifyJudgeFailure`（`timeout` / `http-<status>` / `parse` / `network`）；`source: 'fallback'` 不再是静默 skip——每会话最多一次 hint 指向 `memory_recall`，并打 `fallbackReason`。
+- 新增脚本：`test-quality.mjs`（23 检查）、`test-inject.mjs`（9 检查）、`eval-card-gate.mjs`、`eval-quality.mjs`（碎片/截断/自召回/漏召回门禁）、`eval-exact.mjs`、`audit-structure.mjs`。
+
+### Fixed — 审查中确认的缺陷
+
+- 注入条目的时间原用 `toISOString()` 渲染（UTC，比本地早 8 小时）；改用 `formatLocalTime`。
+- 失败型合成答案（`isRefusal`）不再进入注入块：打 `synthesis-refusal` 并回退到原文条目。
+- `test-plugin` 白名单与 `lib/tools.mjs` schema 同步（`source/orphaned/state/stateNote/supersededBy`）；依赖真实 reranker/语料的两项改为显式 skip 并打印原因。
+- doctor：新增 web/desktop profile diff（12 个关键设置）、judge fallback 日占比 >10% 告警、`degraded` 也 exit 1（`--allow-degraded` 可放行）。
+
+### Changed
+
+- **行为变更**：碎片与超长条目整条丢弃（此前会截断到 preview 上限）；卡片降级默认值 0.35 → 0.68 + 0.02 margin；rerank 降级方向由「放宽」改为「收紧」（最多一张卡，标 `unverified`）。
+- `lib/config.mjs` schema 新增 `cardMargin` / `minContentChars` / `maxEntryChars`（env 同名：`DSH_G_MEMORY_CARD_MARGIN` / `DSH_G_MEMORY_MIN_CONTENT_CHARS` / `DSH_G_MEMORY_MAX_ENTRY_CHARS`）。
+- web profile 与 desktop 对齐：`gate -1.0 / midGate -1.5`、`judge: chat`、0.13 的卡片与内容默认值（此前 web 仍是 10-08 的 `gate: 3` + `judge: rules`，自动路径实际静默）。
+
+### Tests
+
+- `npm test`：exit 0；`test-plugin` 51/51 + 2 显式 skip。
+- `npm run eval:calibration`：PASS（recall@20 22/22）。
+- `node scripts/eval-card-gate.mjs`：0.68/0.02 负样本 0/13。
+- 基线（0.13 上线前历史数据，供对照）：`eval-quality` 7 天窗口碎片 25.8%、截断 57.8%、自召回 12.6%、跨会话漏召回 37.2%，门禁按设计 FAIL。
+
 ## 0.12.0 — 2026-10-17
 
 **索引里近半数"用户原话"其实是 harness 自己说的话：来源判据用的是黑名单，而 producer kind 一直在增长。**

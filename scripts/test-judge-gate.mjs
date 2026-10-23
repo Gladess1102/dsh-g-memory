@@ -66,8 +66,12 @@ const server = createServer((req, res) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const embedUrl = 'http://127.0.0.1:' + server.address().port;
 
-const memory = 'llama-server 的物理批上限是 512 token，超过就会被截断。';
-const filler = '另一条记录：今天天气不错，适合出门散步。';
+// Both fixtures are over 60 characters: injection-side content filtering
+// (lib/quality.mjs, minContentChars) drops shorter entries as fragments, and a
+// filtered memory would make "the gate passed" indistinguishable from "there was
+// nothing to pass" — the hint branch would answer instead of the memory.
+const memory = 'llama-server 的物理批上限是 512 token，超过就会被截断成半句，所以长上下文要自己控制预算，不能指望服务端替你保住末尾。';
+const filler = '另一条记录：今天天气不错，适合出门散步，顺便记一下楼下的花开了，这段话没有任何技术含义，纯粹用来把候选池凑到两个单元以上。';
 const dir = mkdtempSync(join(tmpdir(), 'gm-judge-index-'));
 {
   // Two units, not one: the reranker is skipped for a single candidate

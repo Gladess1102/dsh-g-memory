@@ -1,0 +1,909 @@
+{
+ "meta": {
+  "generated": "2026-10-24",
+  "reviewer": "recall-evaluator",
+  "scope": "2026-09-21→2026-10-24, 全 230 个会话日志, 1447 个真实用户回合",
+  "sources": [
+   "~/.dsh/sessions/*/*/session.v4.jsonl.zstd (zstd -dc 流式解析)",
+   "~/.dsh/dsh-g-memory/auto-recall-stats.jsonl (仅做口径交叉验证)"
+  ],
+  "version_epochs": "按 CHANGELOG.md 的版本日期切分区间；区间内实际生效版本受重启时点影响，属近似",
+  "caveats": [
+   "注入块时间戳按 UTC 渲染，本地 UTC+8：entry age 已扣 8h",
+   "\"assistant 引用\"为粗代理：条目中不出现于触发用户消息的 latin token/4-gram 是否出现在紧随的 assistant 文本里",
+   "重复注入以\"同一会话内同一条目文本出现 2-3 次\"计；跨会话同日同 seq 的两个块不是重复（已核对 (session,seq) 无重复键）"
+  ]
+ },
+ "totals": {
+  "recall_blocks": 425,
+  "hint_blocks": 36,
+  "entries": 639,
+  "first_day": "2026-09-21",
+  "last_day": "2026-10-24",
+  "days_with_recall": 25
+ },
+ "by_epoch": {
+  "v0.1–0.4": {
+   "recall_blocks": 86,
+   "entries": 120,
+   "hint_blocks": 0,
+   "entries_per_block": 1.4,
+   "sessions": 5,
+   "chars_per_block_mean": 669,
+   "chars_per_block_p90": 1006,
+   "len_dist": {
+    "n": 120,
+    "min": 16,
+    "p25": 65,
+    "p50": 128,
+    "p75": 250,
+    "p90": 401,
+    "max": 406,
+    "mean": 174.3
+   },
+   "short_lt80": 33.3,
+   "short_lt120": 45.0,
+   "ellipsis_rate": 0.0,
+   "cls": {
+    "synthesis": 56,
+    "legacy_user": 24,
+    "legacy_assistant": 23,
+    "legacy_tool": 17
+   },
+   "self_recall": 40.6,
+   "no_source": 46.7,
+   "age_h_dist": {
+    "n": 120,
+    "min": 0.0,
+    "p25": 0.0,
+    "p50": 2.2,
+    "p75": 57.9,
+    "p90": 676.0,
+    "max": 963.9,
+    "mean": 177.2
+   },
+   "age_lt24h": 61.7,
+   "age_gt30d": 9.2,
+   "json_frag": 1.7,
+   "path_only": 0.0,
+   "log_noise": 0.0,
+   "fail_synth": 31,
+   "synth_entries": 56,
+   "fail_synth_of_synth": 55.4,
+   "anchor_hit_rate": 8.1,
+   "anchor_hit_rate_strict": 3.5,
+   "anchor_n_mean": 46.0,
+   "dup_distinct_entries": 6,
+   "dup_rate": 5.3
+  },
+  "v0.5–0.6": {
+   "recall_blocks": 61,
+   "entries": 71,
+   "hint_blocks": 0,
+   "entries_per_block": 1.16,
+   "sessions": 12,
+   "chars_per_block_mean": 858,
+   "chars_per_block_p90": 1106,
+   "len_dist": {
+    "n": 71,
+    "min": 20,
+    "p25": 61,
+    "p50": 96,
+    "p75": 201,
+    "p90": 415,
+    "max": 530,
+    "mean": 159.6
+   },
+   "short_lt80": 38.0,
+   "short_lt120": 56.3,
+   "ellipsis_rate": 0.0,
+   "cls": {
+    "transcript": 67,
+    "card": 3,
+    "synthesis": 1
+   },
+   "self_recall": 3.8,
+   "no_source": 63.4,
+   "age_h_dist": {
+    "n": 71,
+    "min": 0.0,
+    "p25": 0.0,
+    "p50": 0.0,
+    "p75": 91.5,
+    "p90": 700.0,
+    "max": 962.2,
+    "mean": 130.1
+   },
+   "age_lt24h": 67.6,
+   "age_gt30d": 9.9,
+   "json_frag": 1.4,
+   "path_only": 0.0,
+   "log_noise": 0.0,
+   "fail_synth": 0,
+   "synth_entries": 1,
+   "fail_synth_of_synth": 0.0,
+   "anchor_hit_rate": 9.8,
+   "anchor_hit_rate_strict": 8.2,
+   "anchor_n_mean": 37.7,
+   "dup_distinct_entries": 0,
+   "dup_rate": 0.0
+  },
+  "v0.7–0.9.6": {
+   "recall_blocks": 24,
+   "entries": 30,
+   "hint_blocks": 0,
+   "entries_per_block": 1.25,
+   "sessions": 9,
+   "chars_per_block_mean": 1008,
+   "chars_per_block_p90": 1155,
+   "len_dist": {
+    "n": 30,
+    "min": 26,
+    "p25": 55,
+    "p50": 75,
+    "p75": 201,
+    "p90": 206,
+    "max": 315,
+    "mean": 126.2
+   },
+   "short_lt80": 53.3,
+   "short_lt120": 56.7,
+   "ellipsis_rate": 0.0,
+   "cls": {
+    "transcript": 24,
+    "card": 4,
+    "synthesis": 2
+   },
+   "self_recall": 7.1,
+   "no_source": 6.7,
+   "age_h_dist": {
+    "n": 30,
+    "min": 0.0,
+    "p25": 71.3,
+    "p50": 266.0,
+    "p75": 342.9,
+    "p90": 1131.4,
+    "max": 1172.1,
+    "mean": 356.9
+   },
+   "age_lt24h": 23.3,
+   "age_gt30d": 20.0,
+   "json_frag": 0.0,
+   "path_only": 0.0,
+   "log_noise": 0.0,
+   "fail_synth": 1,
+   "synth_entries": 2,
+   "fail_synth_of_synth": 50.0,
+   "anchor_hit_rate": 16.7,
+   "anchor_hit_rate_strict": 4.2,
+   "anchor_n_mean": 36.2,
+   "dup_distinct_entries": 0,
+   "dup_rate": 0.0
+  },
+  "v0.10.0": {
+   "recall_blocks": 0,
+   "entries": 0,
+   "hint_blocks": 0,
+   "entries_per_block": null,
+   "sessions": 0,
+   "chars_per_block_mean": null,
+   "chars_per_block_p90": null,
+   "len_dist": {},
+   "short_lt80": null,
+   "short_lt120": null,
+   "ellipsis_rate": null,
+   "cls": {},
+   "self_recall": null,
+   "no_source": null,
+   "age_h_dist": {},
+   "age_lt24h": null,
+   "age_gt30d": null,
+   "json_frag": null,
+   "path_only": null,
+   "log_noise": null,
+   "fail_synth": 0,
+   "synth_entries": 0,
+   "fail_synth_of_synth": null,
+   "anchor_hit_rate": null,
+   "anchor_hit_rate_strict": null,
+   "anchor_n_mean": null,
+   "dup_distinct_entries": 0,
+   "dup_rate": null
+  },
+  "v0.11.0": {
+   "recall_blocks": 34,
+   "entries": 59,
+   "hint_blocks": 6,
+   "entries_per_block": 1.74,
+   "sessions": 16,
+   "chars_per_block_mean": 1316,
+   "chars_per_block_p90": 1541,
+   "len_dist": {
+    "n": 59,
+    "min": 31,
+    "p25": 201,
+    "p50": 260,
+    "p75": 305,
+    "p90": 321,
+    "max": 326,
+    "mean": 218.5
+   },
+   "short_lt80": 22.0,
+   "short_lt120": 22.0,
+   "ellipsis_rate": 67.8,
+   "cls": {
+    "card": 42,
+    "transcript": 17
+   },
+   "self_recall": 0.0,
+   "no_source": 0.0,
+   "age_h_dist": {
+    "n": 59,
+    "min": 0.1,
+    "p25": 43.6,
+    "p50": 256.6,
+    "p75": 492.6,
+    "p90": 548.0,
+    "max": 1508.5,
+    "mean": 322.9
+   },
+   "age_lt24h": 18.6,
+   "age_gt30d": 8.5,
+   "json_frag": 0.0,
+   "path_only": 0.0,
+   "log_noise": 0.0,
+   "fail_synth": 0,
+   "synth_entries": 0,
+   "fail_synth_of_synth": null,
+   "anchor_hit_rate": 26.5,
+   "anchor_hit_rate_strict": 2.9,
+   "anchor_n_mean": 53.1,
+   "dup_distinct_entries": 1,
+   "dup_rate": 1.8
+  },
+  "v0.12.0": {
+   "recall_blocks": 152,
+   "entries": 247,
+   "hint_blocks": 22,
+   "entries_per_block": 1.62,
+   "sessions": 56,
+   "chars_per_block_mean": 1253,
+   "chars_per_block_p90": 1564,
+   "len_dist": {
+    "n": 247,
+    "min": 25,
+    "p25": 72,
+    "p50": 229,
+    "p75": 295,
+    "p90": 316,
+    "max": 330,
+    "mean": 198.9
+   },
+   "short_lt80": 27.5,
+   "short_lt120": 30.4,
+   "ellipsis_rate": 57.1,
+   "cls": {
+    "card": 145,
+    "transcript": 96,
+    "synthesis": 6
+   },
+   "self_recall": 16.6,
+   "no_source": 2.4,
+   "age_h_dist": {
+    "n": 247,
+    "min": 0.0,
+    "p25": 7.0,
+    "p50": 70.6,
+    "p75": 139.3,
+    "p90": 548.2,
+    "max": 1543.4,
+    "mean": 158.9
+   },
+   "age_lt24h": 38.1,
+   "age_gt30d": 3.6,
+   "json_frag": 0.8,
+   "path_only": 0.8,
+   "log_noise": 0.0,
+   "fail_synth": 1,
+   "synth_entries": 6,
+   "fail_synth_of_synth": 16.7,
+   "anchor_hit_rate": 21.7,
+   "anchor_hit_rate_strict": 14.5,
+   "anchor_n_mean": 35.7,
+   "dup_distinct_entries": 8,
+   "dup_rate": 3.3
+  },
+  "v0.12.0+unreleased": {
+   "recall_blocks": 68,
+   "entries": 112,
+   "hint_blocks": 8,
+   "entries_per_block": 1.65,
+   "sessions": 22,
+   "chars_per_block_mean": 1262,
+   "chars_per_block_p90": 1527,
+   "len_dist": {
+    "n": 112,
+    "min": 27,
+    "p25": 92,
+    "p50": 214,
+    "p75": 296,
+    "p90": 321,
+    "max": 337,
+    "mean": 200.3
+   },
+   "short_lt80": 23.2,
+   "short_lt120": 26.8,
+   "ellipsis_rate": 57.1,
+   "cls": {
+    "card": 64,
+    "transcript": 43,
+    "synthesis": 5
+   },
+   "self_recall": 5.6,
+   "no_source": 4.5,
+   "age_h_dist": {
+    "n": 112,
+    "min": 0.0,
+    "p25": 28.9,
+    "p50": 82.3,
+    "p75": 151.6,
+    "p90": 671.4,
+    "max": 1651.7,
+    "mean": 204.0
+   },
+   "age_lt24h": 21.4,
+   "age_gt30d": 8.0,
+   "json_frag": 0.9,
+   "path_only": 0.0,
+   "log_noise": 0.0,
+   "fail_synth": 1,
+   "synth_entries": 5,
+   "fail_synth_of_synth": 20.0,
+   "anchor_hit_rate": 29.4,
+   "anchor_hit_rate_strict": 10.3,
+   "anchor_n_mean": 37.6,
+   "dup_distinct_entries": 6,
+   "dup_rate": 5.8
+  }
+ },
+ "by_day": {
+  "2026-09-21": {
+   "recall_blocks": 6,
+   "entries": 12,
+   "hints": 0
+  },
+  "2026-09-22": {
+   "recall_blocks": 4,
+   "entries": 8,
+   "hints": 0
+  },
+  "2026-09-23": {
+   "recall_blocks": 76,
+   "entries": 100,
+   "hints": 0
+  },
+  "2026-09-24": {
+   "recall_blocks": 31,
+   "entries": 31,
+   "hints": 0
+  },
+  "2026-09-25": {
+   "recall_blocks": 16,
+   "entries": 18,
+   "hints": 0
+  },
+  "2026-09-26": {
+   "recall_blocks": 2,
+   "entries": 3,
+   "hints": 0
+  },
+  "2026-09-28": {
+   "recall_blocks": 7,
+   "entries": 11,
+   "hints": 0
+  },
+  "2026-09-30": {
+   "recall_blocks": 2,
+   "entries": 5,
+   "hints": 0
+  },
+  "2026-10-01": {
+   "recall_blocks": 3,
+   "entries": 3,
+   "hints": 0
+  },
+  "2026-10-02": {
+   "recall_blocks": 7,
+   "entries": 11,
+   "hints": 0
+  },
+  "2026-10-05": {
+   "recall_blocks": 2,
+   "entries": 2,
+   "hints": 0
+  },
+  "2026-10-06": {
+   "recall_blocks": 6,
+   "entries": 8,
+   "hints": 0
+  },
+  "2026-10-07": {
+   "recall_blocks": 9,
+   "entries": 9,
+   "hints": 0
+  },
+  "2026-10-13": {
+   "recall_blocks": 8,
+   "entries": 16,
+   "hints": 0
+  },
+  "2026-10-14": {
+   "recall_blocks": 12,
+   "entries": 22,
+   "hints": 2
+  },
+  "2026-10-15": {
+   "recall_blocks": 7,
+   "entries": 9,
+   "hints": 3
+  },
+  "2026-10-16": {
+   "recall_blocks": 7,
+   "entries": 12,
+   "hints": 1
+  },
+  "2026-10-17": {
+   "recall_blocks": 22,
+   "entries": 41,
+   "hints": 4
+  },
+  "2026-10-18": {
+   "recall_blocks": 13,
+   "entries": 22,
+   "hints": 1
+  },
+  "2026-10-19": {
+   "recall_blocks": 27,
+   "entries": 40,
+   "hints": 4
+  },
+  "2026-10-20": {
+   "recall_blocks": 37,
+   "entries": 60,
+   "hints": 5
+  },
+  "2026-10-21": {
+   "recall_blocks": 53,
+   "entries": 84,
+   "hints": 8
+  },
+  "2026-10-22": {
+   "recall_blocks": 28,
+   "entries": 48,
+   "hints": 4
+  },
+  "2026-10-23": {
+   "recall_blocks": 33,
+   "entries": 51,
+   "hints": 4
+  },
+  "2026-10-24": {
+   "recall_blocks": 7,
+   "entries": 13,
+   "hints": 0
+  }
+ },
+ "provenance_counts": {
+  "written memory, may be lossy": 258,
+  "transcript excerpt": 247,
+  "synthesis": 56,
+  "user": 24,
+  "assistant": 23,
+  "tool": 17,
+  "synthesized answer, may be lossy": 14
+ },
+ "cls_counts": {
+  "card": 258,
+  "transcript": 247,
+  "synthesis": 70,
+  "legacy_user": 24,
+  "legacy_assistant": 23,
+  "legacy_tool": 17
+ },
+ "missed_recall": {
+  "by_epoch": {
+   "v0.1–0.4": {
+    "cross_turns": 12,
+    "cross_with_recall": 9,
+    "turns": 134,
+    "turns_with_recall": 72,
+    "same_turns": 17,
+    "same_with_recall": 7
+   },
+   "v0.5–0.6": {
+    "turns": 252,
+    "same_turns": 28,
+    "turns_with_recall": 55,
+    "cross_turns": 11,
+    "same_with_recall": 3,
+    "cross_with_recall": 1
+   },
+   "v0.7–0.9.6": {
+    "turns": 114,
+    "turns_with_recall": 23,
+    "cross_turns": 6,
+    "cross_with_recall": 3,
+    "same_turns": 17,
+    "same_with_recall": 2
+   },
+   "v0.10.0": {
+    "turns": 12,
+    "same_turns": 3,
+    "cross_turns": 2
+   },
+   "v0.11.0": {
+    "turns": 215,
+    "same_turns": 29,
+    "cross_turns": 8,
+    "turns_with_recall": 34,
+    "same_with_recall": 5,
+    "cross_with_recall": 3
+   },
+   "v0.12.0": {
+    "turns": 475,
+    "turns_with_recall": 145,
+    "same_turns": 63,
+    "same_with_recall": 22,
+    "cross_turns": 27,
+    "cross_with_recall": 15
+   },
+   "v0.12.0+unreleased": {
+    "turns": 207,
+    "turns_with_recall": 63,
+    "same_turns": 19,
+    "same_with_recall": 7,
+    "cross_turns": 6,
+    "cross_with_recall": 4
+   }
+  },
+  "marker_sets": {
+   "cross_session": [
+    "上次",
+    "之前",
+    "上个对话",
+    "上一个",
+    "接续",
+    "原文怎么说",
+    "还记得",
+    "那次",
+    "先前",
+    "前面说",
+    "之前说",
+    "上回"
+   ],
+   "same_session": [
+    "刚才",
+    "继续",
+    "那个",
+    "上一轮",
+    "刚刚",
+    "还是那个"
+   ]
+  },
+  "manual_sample": [
+   {
+    "day": "2026-10-23",
+    "text": "我们之前解决过一次对话工作区搬运问题的，你可以查找一下记忆",
+    "should_recall": true,
+    "got_recall": false,
+    "outcome": "assistant 主动调 memory_recall 找到 10-05 的机制 → 应召回而漏，工具兜住"
+   },
+   {
+    "day": "2026-10-05",
+    "text": "接续 由上一个探索记忆插件的对话 的对话，继续dsh-g-memory插件的完善改进",
+    "should_recall": true,
+    "got_recall": false,
+    "outcome": "用户明说接续上一会话，无注入"
+   },
+   {
+    "day": "2026-09-24",
+    "text": "之前不是拿过其他agent做的记忆作为语料库跑实例了么？现在怎么不用了",
+    "should_recall": true,
+    "got_recall": false,
+    "outcome": "跨会话语料来源，无注入"
+   },
+   {
+    "day": "2026-09-24",
+    "text": "这是因为之前从Ollama切llama之后我就没管，这次一起修完整吧",
+    "should_recall": true,
+    "got_recall": false,
+    "outcome": "历史迁移事实，无注入"
+   },
+   {
+    "day": "2026-10-13",
+    "text": "刚才那个 stats.py 里，mode 遇到并列众数时怎么处理的？改成返回列表。",
+    "should_recall": false,
+    "got_recall": false,
+    "outcome": "会话内指代，不需长期记忆"
+   },
+   {
+    "day": "2026-10-20",
+    "text": "你跑四步之前先优化了mlx 8b it",
+    "should_recall": false,
+    "got_recall": false,
+    "outcome": "会话内指代"
+   },
+   {
+    "day": "2026-10-19",
+    "text": "现在工作台在做最后的生成任务，那个任务完成之后你就可以开始测试了",
+    "should_recall": false,
+    "got_recall": false,
+    "outcome": "会话内指代"
+   },
+   {
+    "day": "2026-10-13",
+    "text": "你这几段还是很AI味儿啊，没那个感觉，再来",
+    "should_recall": false,
+    "got_recall": false,
+    "outcome": "无需召回"
+   },
+   {
+    "day": "2026-10-21",
+    "text": "改URL，继续调研，我把环境准备好",
+    "should_recall": false,
+    "got_recall": false,
+    "outcome": "会话内指代"
+   },
+   {
+    "day": "2026-10-21",
+    "text": "其它模型实测之前先做社区的口碑调研，顺便去社区看下这个兼容怎么搞",
+    "should_recall": false,
+    "got_recall": false,
+    "outcome": "会话内指代"
+   },
+   {
+    "day": "2026-08-30",
+    "text": "继续任务，并绕开pi ai error的错误",
+    "should_recall": true,
+    "got_recall": false,
+    "outcome": "跨会话接续（0.1.x 早期，自动召回尚未成熟）"
+   },
+   {
+    "day": "2026-10-13",
+    "text": "会话 ID：0493a969…（cwd=/）日志在 --root-- 下",
+    "should_recall": false,
+    "got_recall": false,
+    "outcome": "要的是读日志，不是记忆"
+   },
+   {
+    "day": "2026-09-21",
+    "text": "A+许可用 MIT，但其他任务也需要并行或在做完记忆系统后继续",
+    "should_recall": false,
+    "got_recall": false,
+    "outcome": "决策/指令，无需召回"
+   },
+   {
+    "day": "2026-10-21",
+    "text": "你来核对那个疑点，我也不会啊",
+    "should_recall": false,
+    "got_recall": false,
+    "outcome": "会话内指代"
+   }
+  ]
+ },
+ "manual_labels": {
+  "v0.1–0.4": {
+   "sampled": 12,
+   "useful": 0,
+   "weak": 5,
+   "irrelevant": 6,
+   "harmful": 1,
+   "notes": "6/12 是 synthesis 空答案（\"根据记忆片段，答案不明确\"）；1 条把 400 字符的旧 assistant 原文+网页抓取正文（仁化银毫茶价）注入到\"不增量怎么行\"的讨论里",
+   "examples": [
+    {
+     "day": "2026-09-23",
+     "seq": 428,
+     "label": "irrelevant",
+     "prov": "synthesis",
+     "text": "根据记忆片段，答案不明确。片段1提到…片段3提到本地只有Loader清单和插件市场目录。问题询问…但未提供具体答案。当前记忆片段不包含直接可用的答案。"
+    },
+    {
+     "day": "2026-09-23",
+     "seq": 6035,
+     "label": "harmful",
+     "prov": "legacy_tool",
+     "text": "仁化银毫价格多少钱一斤？（小银毫价格…） - 普茶网 …（401 字符网页正文，与问题\"有没有更小的模型\"无关）"
+    },
+    {
+     "day": "2026-09-23",
+     "seq": 5706,
+     "label": "irrelevant",
+     "prov": "legacy_assistant",
+     "note": "SELF 自召回 + 400 字符旧回复，问的是增量构建"
+    }
+   ]
+  },
+  "v0.5–0.6": {
+   "sampled": 12,
+   "useful": 0,
+   "weak": 6,
+   "irrelevant": 5,
+   "harmful": 1,
+   "notes": "几乎全部是合成答案被贴成 \"transcript excerpt\"（标签错误：模型散文被声明为逐字原文），且同一块在同一分钟内重复注入两次",
+   "examples": [
+    {
+     "day": "2026-09-24",
+     "seq": 2042,
+     "label": "weak",
+     "prov": "transcript excerpt",
+     "text": "根据记忆片段，当前日期为2026-09-24。用户提到\"其他那些测试用的模型也都处理干净了吧…\" 根据片段[1]（2026-08-21）…"
+    },
+    {
+     "day": "2026-09-24",
+     "seq": 1453,
+     "label": "harmful",
+     "prov": "transcript excerpt",
+     "note": "同一 block 在 1 分钟内原样注入两次（重复），内容为\"片段中无法回答该问题\""
+    }
+   ]
+  },
+  "v0.7–0.9.6": {
+   "sampled": 12,
+   "useful": 4,
+   "weak": 6,
+   "irrelevant": 1,
+   "harmful": 1,
+   "notes": "卡片层开始出现高价值条目（GitHub 不可达替代路径、端侧模型对比结论）；但 transcript 仍混入 26 字符的零信息碎片",
+   "examples": [
+    {
+     "day": "2026-10-07",
+     "seq": 2063,
+     "label": "useful",
+     "prov": "written memory",
+     "text": "本机网络：github.com:443 长期不可达…可行替代：用 REST API 重建对象推送"
+    },
+    {
+     "day": "2026-10-07",
+     "seq": 507,
+     "label": "useful",
+     "prov": "written memory",
+     "text": "端侧嵌入模型对比结论…Gemma-300M 与 BGE-M3 不可区分，C-MTEB 落后 4.4 点…"
+    },
+    {
+     "day": "2026-10-02",
+     "seq": 5377,
+     "label": "harmful",
+     "prov": "transcript excerpt",
+     "text": "我先查看一下项目的整体结构和技术栈，然后给出评估。"
+    }
+   ]
+  },
+  "v0.11.0": {
+   "sampled": 12,
+   "useful": 3,
+   "weak": 5,
+   "irrelevant": 3,
+   "harmful": 1,
+   "notes": "卡片成为主体；财务线/长会话索引/架构定稿卡对当时提问高度对症。仍有 30-50 字符的旧 transcript 碎片（实为占用预算的噪声），同一卡在同一会话最多注入 3 次",
+   "examples": [
+    {
+     "day": "2026-10-15",
+     "seq": 1252,
+     "label": "useful",
+     "prov": "written memory",
+     "text": "基音电子/G Sound 债务线…机构≈12万…招联 9/20 19,228.66…（用户当轮问\"家里只支持两万\"）"
+    },
+    {
+     "day": "2026-10-13",
+     "seq": 28,
+     "label": "useful",
+     "prov": "written memory",
+     "text": "DSH 长会话索引：session-d6f75573…＝塔罗牌账与出港阵补牌…"
+    },
+    {
+     "day": "2026-10-14",
+     "seq": 1777,
+     "label": "harmful",
+     "prov": "transcript excerpt",
+     "text": "去这两个模型的官网/社区评论/github评论区都看看最佳部署方式（44 字符）",
+     "note": "零信息量旧任务碎片，看起来像当前指令"
+    }
+   ]
+  },
+  "v0.12.0": {
+   "sampled": 12,
+   "useful": 0,
+   "weak": 6,
+   "irrelevant": 5,
+   "harmful": 1,
+   "notes": "抽样期间正是\"边升级 DSH 边做别的活\"的混合场景，注入大量与当轮任务无关的运维卡；assistant 在 10-18 51 明确写道\"记忆里是 DSH 升级的旧账，跟这事无关，略过\"",
+   "examples": [
+    {
+     "day": "2026-10-18",
+     "seq": 51,
+     "label": "harmful",
+     "prov": "written memory",
+     "text": "2026-10-14 完成 task-2 只读审计…端口 11439/11436…（当轮问的是 moss-image-base 部署评估）",
+     "assistant": "记忆里是 DSH 升级的旧账，跟这事无关，略过。"
+    },
+    {
+     "day": "2026-10-21",
+     "seq": 2624,
+     "label": "harmful",
+     "prov": "transcript excerpt",
+     "text": "pp Q8_0** 和 **MLX 8bit**。…继续读 runner 和 [7684] 继续盯监控…（拼接错乱片段）"
+    },
+    {
+     "day": "2026-10-20",
+     "seq": 7029,
+     "label": "irrelevant",
+     "prov": "synthesized answer",
+     "text": "…这些片段未明确说明在跑那\"四步\"之前先对 MLX 8bit 做了优化。"
+    },
+    {
+     "day": "2026-10-19",
+     "seq": 3572,
+     "label": "weak",
+     "prov": "transcript excerpt",
+     "note": "SELF：来自当前会话自身的 39 字符原文"
+    }
+   ]
+  },
+  "v0.12.0+unreleased": {
+   "sampled": 12,
+   "useful": 2,
+   "weak": 8,
+   "irrelevant": 2,
+   "harmful": 0,
+   "notes": "卡片命中率略有回升（moss 工作台/重启坑对症），但\"审查任务\"被塞进 DSH 升级旧账卡；日志式 transcript（df/文件清单）仍会进注入",
+   "examples": [
+    {
+     "day": "2026-10-22",
+     "seq": 2045,
+     "label": "useful",
+     "prov": "written memory",
+     "text": "在 agent 回合内触发 DSH 重启会杀掉承载该会话的进程…（用户当轮：\"我已重启，VCP侧继续搞\"）"
+    },
+    {
+     "day": "2026-10-23",
+     "seq": 33,
+     "label": "useful",
+     "prov": "written memory",
+     "text": "~/moss-image/web/ 工作台…超分 5 模型实测全成功…"
+    },
+    {
+     "day": "2026-10-23",
+     "seq": 1469,
+     "label": "weak",
+     "prov": "transcript excerpt",
+     "text": "=== 文件 === /Users/…/model-00001-of-00002.safetensors 0.76 GiB ⏳ 仍在下载 /dev/disk3s1s1 228Gi…"
+    }
+   ]
+  }
+ },
+ "reproduce": {
+  "commands": [
+   "python3 /tmp/rq_census.py  # 源类型普查",
+   "python3 /tmp/rq_scan.py     # 抽取 425 个注入块 + 每条条目 + 紧随的 assistant 文本",
+   "python3 /tmp/rq_turns.py    # 抽取 1447 个真实用户回合与注入归属",
+   "python3 /tmp/rq_analyze.py  # 生成本文件的 by_epoch/by_day 数字",
+   "python3 /tmp/rq_missed.py   # 漏召回候选"
+  ],
+  "note": "脚本随本报告一并附在 md 附录（同一份代码），全部只读，不改仓库与数据目录"
+ },
+ "duplicates": {
+  "method": "同一会话内同一条目文本(前100字符)出现次数>1",
+  "repeated_distinct_entries": 22,
+  "consecutive_identical_blocks": 2,
+  "consecutive_examples": [
+   "2026-09-22 seq 5865→5876（同 2 条，间隔 11 步）",
+   "2026-09-23 seq 7573→7584（同 2 条，间隔 11 步）"
+  ],
+  "worst_cases": [
+   "dsh-g-memory 架构定稿卡在同一会话注入 3 次（v0.11.0）",
+   "2026-10-20 记忆系统体检卡注入 3 次（未发布区间）",
+   "2026-11-01 起官方搜索计费卡注入 2 次（v0.12.0）"
+  ]
+ },
+ "label_provenance_note": "639 条条目里 provenance 实际只出现 3 种取值（written memory, may be lossy / transcript excerpt / synthesis）；代码里已有的 unverifiable、authored change、superseded/retired/expired、reviewed by the user 等分支在真实数据中一次都没出现"
+}

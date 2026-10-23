@@ -23,6 +23,29 @@ const check = async (name, fn) => {
 };
 
 /**
+ * A memory-shaped sentence, over the 60-character content floor.
+ *
+ * The floor is not cosmetic here: `selectForInjection`/`selectByPolicy` drop anything
+ * shorter as a fragment before the score is even read, so a fixture like `unit 0`
+ * measures the content filter instead of the rule the check is about — it made
+ * seven of these checks fail with "nothing was injectable content (too-short×4)".
+ */
+const LONG = '重排服务空闲 300 秒就释放模型，所以冷启动要三到六秒；机器重启后的第一次调用实测出现过五十六秒，最坏的一次等了一百八十秒才加载完成。';
+
+/**
+ * A card candidate on the degraded path (no reranker).
+ *
+ * The text is long for the same reason as `LONG`. The similarity defaults to a value
+ * that clears the *relative* card rule: a card must reach 0.68 and lead the next card
+ * by 0.02 — see `pickDegradedCards` in lib/quality.mjs and the sweep in
+ * scripts/eval-card-gate.mjs.
+ */
+const CARD_TEXT = '重排服务的常驻卡：空闲三百秒释放模型，冷启动要三到六秒，机器重启后的第一次调用实测到过五十六秒，这是一张已经定稿的策展卡片。';
+const cardFixture = (overrides = {}) => ({
+  text: CARD_TEXT, score: 0, similarity: 0.74, source: 'card', time: Date.now() - 86_400_000, seq: null, ...overrides,
+});
+
+/**
  * Entries as the reranker hands them over: score on the cross-encoder scale.
  *
  * Aged deliberately. The default policy's recent tier (age ≤ 0 days) is ungated
@@ -31,7 +54,7 @@ const check = async (name, fn) => {
  * in the long-term tier, where the floor is `gate` and the arithmetic is plain.
  */
 const entries = (scores, ageDays = 30) => scores.map((score, i) => ({
-  text: `unit ${i}`, score, time: Date.now() - ageDays * 86_400_000, seq: i,
+  text: `${LONG}（第 ${i} 条）`, score, time: Date.now() - ageDays * 86_400_000, seq: i,
 }));
 const run = (scores, policy) => selectByPolicy(entries(scores), { policy });
 
@@ -167,36 +190,73 @@ await check('a card is judged by its own similarity when there is no reranker', 
   // Cards enter the pool with score 0 (they are not RRF hits), so the floor rejects
   // every one — the layer that survives a deleted transcript was unreachable
   // exactly when the reranker was unavailable.
-  const card = { text: '一张卡片', score: 0, similarity: 0.44, source: 'card', time: Date.now() - 86_400_000, seq: null };
-  // The degraded branch the automatic path builds: every tier pinned to the RRF floor.
+  //
+  // The rule is relative now: at most ONE card, above 0.68, and leading the next by
+  // 0.02. The old absolute 0.35 floor was re-measured on 2026-10-24 and is nearly
+  // always true in the current embedding space (8 of 8 random tokens cleared it).
   const degradedPolicy = { gate: rrfFloor(), midGate: rrfFloor(), recentGate: rrfFloor() };
-  const degraded = selectByPolicy([card], { policy: degradedPolicy, reranked: false });
-  assert.equal(degraded.selected.length, 1, 'the card cleared its own pre-filter and must be admitted');
-  const dropped = selectByPolicy([{ ...card }], { policy: degradedPolicy, reranked: true });
+  const degraded = selectByPolicy(
+    [cardFixture({ similarity: 0.74 }), cardFixture({ similarity: 0.70 })],
+    { policy: degradedPolicy, reranked: false },
+  );
+  assert.equal(degraded.selected.length, 1, 'one leading card is admitted');
+  assert.equal(degraded.selected[0].similarity, 0.74, 'and it is the leading one');
+  assert.equal(degraded.selected[0].unverified, true, 'nothing on this path compared it with the question');
+  const dropped = selectByPolicy([cardFixture()], { policy: degradedPolicy, reranked: true });
   assert.equal(dropped.selected.length, 0, 'without the card rule a score of 0 cannot clear the floor');
 });
 
 await check('a card below the similarity floor is still rejected', async () => {
-  const card = { text: '一张勉强相关的卡片', score: 0, similarity: 0.2, source: 'card', time: Date.now() - 86_400_000, seq: null };
+  // 0.62 sits in the band measured for unrelated queries on EmbeddingGemma 2 (the
+  // cosine lower bound over the corpus is about 0.58), which the old 0.35 floor
+  // admitted every time.
   const degradedPolicy = { gate: rrfFloor(), midGate: rrfFloor(), recentGate: rrfFloor() };
-  assert.equal(selectByPolicy([card], { policy: degradedPolicy, reranked: false }).selected.length, 0);
+  const out = selectByPolicy([cardFixture({ similarity: 0.62 })], { policy: degradedPolicy, reranked: false });
+  assert.equal(out.selected.length, 0);
+  assert.equal(out.droppedReasons['card-low-similarity'], 1, 'the reason names the floor, not the margin');
+});
+
+await check('an unrelated query\'s top cards are interchangeable and admit none', async () => {
+  // The negative sample this rule exists for: both cards look "similar enough", and
+  // the query has no card at all. Measured, that is what an unrelated query returns —
+  // top cards within noise of each other — and it is what the absolute floor could
+  // not express. No reranker involved, so this runs without the 11436 endpoint.
+  const degradedPolicy = { gate: rrfFloor(), midGate: rrfFloor(), recentGate: rrfFloor() };
+  const out = selectByPolicy(
+    [cardFixture({ similarity: 0.90 }), cardFixture({ similarity: 0.89 })],
+    { policy: degradedPolicy, reranked: false },
+  );
+  assert.equal(out.selected.length, 0, 'a coin-flip between two cards is not a memory');
+  assert.equal(out.droppedReasons['card-margin'], 2);
+  // And the tool path, which applies the same rule, agrees.
+  const tool = selectForInjection(
+    [cardFixture({ similarity: 0.90 }), cardFixture({ similarity: 0.89 })],
+    { minScore: 1 / 61, reranked: false },
+  );
+  assert.equal(tool.selected.length, 0);
 });
 
 await check('the card rule does not loosen anything else', async () => {
   // The same shape without `source: 'card'` must still be dropped by the floor:
   // a zero score on an index fragment means the arms found nothing.
-  const fragment = { text: '一个片段', score: 0, similarity: 0.99, time: Date.now() - 86_400_000, seq: 1 };
+  const fragment = { text: CARD_TEXT, score: 0, similarity: 0.99, time: Date.now() - 86_400_000, seq: 1 };
   const degradedPolicy = { gate: rrfFloor(), midGate: rrfFloor(), recentGate: rrfFloor() };
   assert.equal(selectByPolicy([fragment], { policy: degradedPolicy, reranked: false }).selected.length, 0);
 });
 
 await check('the tool path applies the same card rule', async () => {
-  const card = { text: '一张卡片', score: 0, similarity: 0.44, source: 'card', time: Date.now() - 86_400_000, seq: null };
   const floor = 1 / 61;
-  assert.equal(selectForInjection([card], { minScore: floor, reranked: true }).selected.length, 0);
-  assert.equal(selectForInjection([card], { minScore: floor, reranked: false, cardMinSimilarity: 0.35 }).selected.length, 1);
-  const weak = { ...card, similarity: 0.1 };
-  assert.equal(selectForInjection([weak], { minScore: floor, reranked: false, cardMinSimilarity: 0.35 }).selected.length, 0);
+  // With a reranker the card competes like any other entry: its cross-encoder score
+  // is what the gate reads, and the marginal similarity is irrelevant.
+  assert.equal(selectForInjection([cardFixture({ similarity: 0.99, score: 4.2 })], { minScore: 0, reranked: true }).selected.length, 1);
+  const degraded = selectForInjection(
+    [cardFixture({ similarity: 0.74 }), cardFixture({ similarity: 0.70 })],
+    { minScore: floor, reranked: false },
+  );
+  assert.equal(degraded.selected.length, 1, 'at most one card without a reranker');
+  assert.equal(degraded.selected[0].unverified, true);
+  const weak = selectForInjection([cardFixture({ similarity: 0.62 })], { minScore: floor, reranked: false });
+  assert.equal(weak.selected.length, 0, 'the floor applies on both paths');
 });
 
 await check('a budget at the floor still delivers a memory', async () => {

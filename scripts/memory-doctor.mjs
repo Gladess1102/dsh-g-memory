@@ -16,22 +16,33 @@
  *   cards    the curated layer: count, governance state, tags, vector space
  *   traffic  the last seven days of decisions, with the silent-failure patterns
  *            called out explicitly (armed but never injected, gate always drops,
- *            hints never consumed, late-drops climbing)
+ *            hints never consumed, late-drops climbing), plus the two new ways
+ *            that log lies: late-drops concentrated into one event day rather
+ *            than spread evenly, and judge decisions that silently degraded
+ *   coldstart the log's own cold-start times against the client timeout they are
+ *            racing, because the smoke test above warms the model first and so
+ *            can never reproduce the two-minute start that drops real recalls
+ *   backups  old index and card copies sitting next to the live ones, which get
+ *            read as current state by whoever greps the directory
  *   config   which switches are on, because "off" and "broken" look identical
  *
- * Exit code is 0 when nothing is wrong, 1 when something is, so it can be put in
- * a cron or a pre-flight check.
+ * Exit code is 0 when nothing is wrong, 1 when something is. A warning counts as
+ * "something is": a degraded deployment is not a healthy one, and the failures
+ * this script exists to find all looked healthy from a switch-level report. Pass
+ * --allow-degraded to report warnings without failing, so it can still be put in
+ * a cron or a pre-flight check that only gates on hard faults.
  *
  *   node scripts/memory-doctor.mjs
  *   node scripts/memory-doctor.mjs --json
  *   node scripts/memory-doctor.mjs --days 14
+ *   node scripts/memory-doctor.mjs --allow-degraded
  *
  * SPDX-License-Identifier: MIT
  */
 
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { readIndex, defaultIndexDir } from '../lib/store.mjs';
 import { embedBatch, resolveConfig } from '../lib/embedder.mjs';
 import { rerankEntries, resolveRerankConfig } from '../lib/rerank.mjs';
@@ -50,10 +61,57 @@ const valueOf = (flag, fallback) => {
   return next;
 };
 const asJson = argv.includes('--json');
+/** Warnings are the degraded verdict; --allow-degraded keeps them out of the exit code. */
+const allowDegraded = argv.includes('--allow-degraded');
 const days = Number(valueOf('--days', '7'));
 
+// A "skip" is the fourth level, and it exists because the honest answer to
+// "how long does a cold start take" is sometimes "nothing here has measured
+// one". A warn would invent a fault and an ok would hide the gap.
 const home = process.env.DSH_HOME || join(homedir(), '.dsh');
 const statsPath = process.env.DSH_G_MEMORY_AUTO_STATS || join(home, 'dsh-g-memory', 'auto-recall-stats.jsonl');
+const statsDir = dirname(statsPath);
+const localDay = (t) => {
+  const d = new Date(t);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+};
+const localStamp = (t) => {
+  const d = new Date(t);
+  return localDay(t) + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+};
+const mb = (bytes) => bytes >= 1024 * 1024 ? (bytes / 1024 / 1024).toFixed(1) + ' MB' : Math.round(bytes / 1024) + ' KB';
+// Recursive, with symlinks counted as their own size rather than followed:
+// this walks a directory whose whole problem is old copies pointing at each
+// other, and following them once cost a five-minute walk on a real machine.
+async function treeBytes(dir) {
+  let total = 0;
+  let entries = [];
+  try { entries = await readdir(dir, { withFileTypes: true }); } catch { return 0; }
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) total += await treeBytes(full);
+    else if (entry.isFile()) total += await stat(full).then((s) => s.size).catch(() => 0);
+  }
+  return total;
+}
+const CONFIG_FILE = join(dirname(new URL(import.meta.url).pathname), '..', 'lib', 'config.mjs');
+let configDefault = null;
+// Read the schema's own default rather than hard-coding 30 000: this script
+// exists to notice when a measured number and a declared one disagree, so it
+// should not add a third copy of the number that can drift.
+async function readConfigDefault() {
+  if (configDefault !== null) return configDefault;
+  configDefault = 30_000;
+  try {
+    const text = await readFile(CONFIG_FILE, 'utf8');
+    const at = text.indexOf("  embed: t.object({");
+    if (at !== -1) {
+      const m = /timeoutMs: t\.number\(([0-9_]+)/.exec(text.slice(at, at + 600));
+      if (m) configDefault = Number(m[1].replace(/_/g, ''));
+    }
+  } catch { /* unreadable schema: the documented default stands */ }
+  return configDefault;
+}
 const findings = [];
 const say = (level, area, message, advice) => findings.push({ level, area, message, ...(advice ? { advice } : {}) });
 const ok = (area, message) => say('ok', area, message);
@@ -220,10 +278,10 @@ try {
   }
 }
 
-// ------------------------------------------------------------------ config
-// What the profiles declare — the third view, and the one that catches the most
-// common confusion of all: a switch that is declared, correct, and not yet in
-// effect because the host has not restarted since it was written.
+// What each profile declares. Read before the checks below, because the
+// cold-start budget is one of the declared values and a check that reads its own
+// input after itself is how a script reports a ReferenceError as "unmeasured".
+// (The config section below reads this same `declared`.)
 async function declaredInProfiles() {
   const out = [];
   for (const profile of ['web', 'desktop', 'headless']) {
@@ -243,13 +301,275 @@ async function declaredInProfiles() {
       // nothing about the host it is supposed to be diagnosing.
       judgeUrl: grab(/^    judge:\n(?:[^\n]*\n)*?        url: (\S+)/m),
       judgeKeyName: grab(/^    judge:\n(?:[^\n]*\n)*?        apiKeyName: (\S+)/m),
+      judgeThreshold: grab(/^    judge:\n(?:[^\n]*\n)*?      threshold: (\S+)/m),
+      judgeTimeout: grab(/^    judge:\n(?:[^\n]*\n)*?      timeoutMs: (\S+)/m),
       resident: grab(/^    resident:\n(?:[^\n]*\n)*?      enabled: (\S+)/m),
+      residentLimit: grab(/^    resident:\n(?:[^\n]*\n)*?      limit: (\S+)/m),
       gate: grab(/^    policy:\n(?:[^\n]*\n)*?      gate: (\S+)/m),
+      midGate: grab(/^    policy:\n(?:[^\n]*\n)*?      midGate: (\S+)/m),
+      marginGate: grab(/^    policy:\n(?:[^\n]*\n)*?      marginGate: (\S+)/m),
+      cardMinSimilarity: grab(/^    policy:\n(?:[^\n]*\n)*?      cardMinSimilarity: (\S+)/m),
+      cardMargin: grab(/^    policy:\n(?:[^\n]*\n)*?      cardMargin: (\S+)/m),
+      minContentChars: grab(/^    policy:\n(?:[^\n]*\n)*?      minContentChars: (\S+)/m),
+      maxEntryChars: grab(/^    policy:\n(?:[^\n]*\n)*?      maxEntryChars: (\S+)/m),
+      // The embed timeout the host would run with. Scoped to the `embed:` section
+      // on purpose: the same block sets a judge timeout, a synthesis timeout and
+      // a title timeout, so a whole-block search reports whichever one happens to
+      // come first as "the" timeout the embedder races. Absent here means the
+      // schema default applies, which is exactly the fact worth reporting.
+      embedTimeout: (() => {
+        const embedAt = block.search(/^    embed:\s*$/m);
+        if (embedAt === -1) return null;
+        const after = block.slice(embedAt + 1);
+        const next = after.search(/^    [a-zA-Z]/m);
+        const m = /^      timeoutMs:\s*(\S+)/m.exec(next === -1 ? after : after.slice(0, next));
+        return m ? m[1] : null;
+      })(),
     });
   }
   return out;
 }
 const declared = await declaredInProfiles();
+
+// -------------------------------------------------------------- coldstart
+// The smoke test in `models` above answers one question well — is the embedder
+// up right now — and it cannot answer the question that has actually dropped
+// recalls. It queries a model that is by definition already warm: the doctor's
+// own request starts the sidecar, but the arrival of that request is itself the
+// warm-up, so the measured 59 ms is the steady state, never the start. The
+// failure this leaves green is the documented one: the daemon releases its
+// child after 300 s idle, the next request pays a full model load, the start
+// has been measured at 3.2–6.0 s when healthy and at 56.2 / 117.7 s / ≥180 s
+// when it is not, and the client gives up long before the long ones finish.
+//
+// The log has the honest numbers, so the check reads the log instead of trying
+// to reproduce the fault. It stays a static read: nothing here wakes the
+// sidecar, because a health check that induces a two-minute cold start every
+// time it runs is a health check that causes the incident.
+//
+// Shape of the lines it reads (HH:MM:SS, no date — the file is not rotated):
+//   [embed-gemma2] 04:06:43 就绪，用时 117.7s（pid 11276）
+const EMBED_LOG = process.env.DSH_G_MEMORY_EMBED_LOG || join(home, 'logs', 'embed-gemma2.log');
+const READY_LINE = /^\[[^\]]+\]\s+(\d{2}:\d{2}:\d{2})\s+就绪，用时\s+([0-9]+(?:\.[0-9]+)?)\s*s/;
+try {
+  const text = await readFile(EMBED_LOG, 'utf8');
+  const samples = [];
+  for (const line of text.split('\n')) {
+    const m = READY_LINE.exec(line);
+    if (m) samples.push({ at: m[1], s: Number(m[2]) });
+  }
+  // A start the script has no line for at all. The daemon logs its own killer:
+  // "启动超时（180s）" is the start that failed rather than finished, and it is
+  // the worst case for the client, so it belongs in the report even though it
+  // cannot be averaged in with the ones that completed.
+  const neverStarted = (text.match(/启动超时（(\d+)s）/g) || []).length;
+  if (samples.length === 0) {
+    say('skip', 'coldstart', 'no cold-start records in ' + EMBED_LOG + ' — cannot say how long a cold start takes here, only that none has been logged'
+      + (neverStarted ? ' (' + neverStarted + ' start(s) timed out outright)' : ''),
+      'the log is written by the sidecar that serves the embedder; if it is missing, cold starts are unmeasured');
+  } else {
+    const sorted = samples.map((s) => s.s).sort((a, b) => a - b);
+    const pick = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
+    const p50 = pick(0.5);
+    const p95 = pick(0.95);
+    const max = sorted[sorted.length - 1];
+    const worst = samples.filter((s) => s.s === max).slice(0, 3);
+    const startWord = 'cold start (n=' + samples.length + ', log has no dates so the window does not apply)';
+    const fmt = (s) => s + 's';
+
+    // Which timeout the start is racing, and where that number comes from. The
+    // profiles are the authority here, not this shell: a shell running the
+    // doctor has none of these variables set, and the whole failure mode is a
+    // host whose config the shell cannot see.
+    const cfgDefault = await readConfigDefault();
+    const declaredTimeout = declared.map((d) => ({ profile: d.profile, ms: Number(d.embedTimeout) })).filter((d) => Number.isFinite(d.ms));
+    const envTimeout = Number(process.env.DSH_G_MEMORY_EMBED_TIMEOUT_MS);
+    const effective = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : null;
+    const candidates = (declaredTimeout.length ? declaredTimeout.map((d) => d.ms) : [effective ?? cfgDefault]);
+    // The strictest client is the one that gives up first, and on this machine
+    // that is a real distinction: the profiles disagree, so the start has to
+    // clear the smallest number rather than the one this shell happens to have.
+    const budget = Math.min(...candidates);
+    // Everything above is milliseconds and everything below is seconds — the log
+    // prints seconds, the config is written in ms, and comparing the two
+    // directly is a silent factor of 1000 that makes a 117.7 s start look like
+    // it fits a 90 s budget. One conversion, at the boundary, on purpose.
+    const budgetSec = budget / 1000;
+    const source = declaredTimeout.length
+      ? (declaredTimeout.length > 1
+        ? 'profiles ' + declaredTimeout.map((d) => d.profile + ' ' + d.ms + 'ms').join(' / ') + ' (min ' + budget + 'ms)'
+        : 'profile ' + declaredTimeout[0].profile + ' override ' + budget + 'ms')
+      : effective !== null
+        ? 'environment DSH_G_MEMORY_EMBED_TIMEOUT_MS ' + effective + 'ms'
+        : 'schema default ' + cfgDefault + 'ms (no profile overrides embed.timeoutMs)';
+    const head = startWord + ': P50 ' + fmt(p50) + ', P95 ' + fmt(p95) + ', max ' + fmt(max)
+      + '; budget ' + budgetSec + 's (' + budget + 'ms) from ' + source;
+
+    if (max >= budgetSec) {
+      warn('coldstart', head
+        + " — the slowest start observed (" + max + "s) does not fit the client's budget; it was recorded at " + worst.map((w) => w.at).join(', ') + ' (log times carry no date)',
+        'each timeout is a dropped recall, not a slow one: the client has already given up and the model finishes into a disconnected socket. Raise embed.timeoutMs past the healthy start (3–6 s), or stop the daemon releasing the child after 300 s idle');
+    } else {
+      ok('coldstart', head);
+    }
+    if (neverStarted) {
+      warn('coldstart', neverStarted + " start(s) in this log never became ready (the daemon's own 180 s limit fired)",
+        'a start that cannot finish inside 180 s is a wedged model load, not a slow one: check memory pressure and the gguf path');
+    }
+  }
+} catch (error) {
+  say('skip', 'coldstart', 'no cold-start times readable from ' + EMBED_LOG + ' (' + (error?.code || error?.name || 'unreadable') + ': ' + String(error?.message || error).slice(0, 80) + ')',
+    'this is the log the on-demand sidecar writes; without it the smoke test above is the only timing evidence, and it never sees a cold start');
+}
+
+// ------------------------------------------------------------- judge degrade
+// The judge has a fallback that fails silently by construction: when the backend
+// does not answer, the decision degrades to rules and every degraded turn returns
+// "skip" while writing no event of its own. The only surviving trace is the
+// `why` field on the judge row, so aggregate counts read exactly like a healthy
+// deployment that simply decided not to retrieve.
+//
+// A raw count is the wrong statistic. Twenty fallbacks spread over seven quiet
+// days is a very different system from twenty in one afternoon, and the
+// 2.5-5.3 s timeouts behind the 2026-10-23 spike are background noise on other
+// days. So the alarm is the *share of decisions per day* (>10%), and the message
+// names the failure class judge.mjs records in `why`
+// (timeout / http-<status> / parse / network / circuit-open) so the next
+// investigation starts from a cause instead of from the endpoint.
+const JUDGE_FALLBACK_ALARM = 0.10;
+{
+  const decisions = observed.rows.filter((r) => r.event === 'judge');
+  const isDegraded = (r) => r.source === 'fallback' || /model layers unavailable/i.test(String(r.why || ''));
+  const degraded = decisions.filter(isDegraded);
+  const byDay = new Map();
+  for (const r of decisions) {
+    const key = localDay(r.t);
+    const bucket = byDay.get(key) || { total: 0, fellBack: 0 };
+    bucket.total += 1;
+    if (isDegraded(r)) bucket.fellBack += 1;
+    byDay.set(key, bucket);
+  }
+  const causes = new Map();
+  for (const r of degraded) {
+    const m = /:(?: chat| jev) ([a-z0-9-]+)/i.exec(String(r.why || ''));
+    const key = m ? m[1] : 'unclassified';
+    causes.set(key, (causes.get(key) || 0) + 1);
+  }
+  const causeText = causes.size
+    ? ' [' + [...causes.entries()].sort((a, b) => b[1] - a[1]).map(([kind, n]) => kind + ' ' + n).join(', ') + ']'
+    : '';
+  const share = decisions.length ? degraded.length / decisions.length : 0;
+  // A day needs a denominator before its ratio means anything: 1 fallback in 3
+  // decisions is noise, not a 33% incident.
+  const hotDays = [...byDay.entries()]
+    .filter(([, b]) => b.total >= 4 && b.fellBack / b.total > JUDGE_FALLBACK_ALARM)
+    .sort((a, b) => b[1].fellBack / b[1].total - a[1].fellBack / a[1].total);
+  const advice = 'every degraded decision answers "skip" with no event of its own, so the automatic path looks quiet rather than broken. Check the backend key and endpoint, then judge.timeoutMs against how long it really takes to answer';
+  if (degraded.length === 0) {
+    ok('judge', decisions.length + ' judge decision(s) in ' + days + ' d, none degraded to the fallback');
+  } else if (share > JUDGE_FALLBACK_ALARM || hotDays.length > 0) {
+    const worst = hotDays.slice(0, 3).map(([day, b]) => day + ' ' + b.fellBack + '/' + b.total + ' (' + Math.round((b.fellBack / b.total) * 100) + '%)');
+    warn('judge', 'judge degraded on ' + degraded.length + '/' + decisions.length + ' decisions in ' + days + ' d ('
+      + Math.round(share * 100) + '%, alarm >' + Math.round(JUDGE_FALLBACK_ALARM * 100) + '%)' + causeText
+      + (worst.length ? '; worst day(s) ' + worst.join(', ') : '')
+      + '; first ' + degraded.slice(0, 3).map((r) => localStamp(r.t)).join(', '),
+      advice);
+  } else {
+    // Below the alarm is still not healthy — it is the background rate, reported
+    // with its number. Warning on every nonzero day would train the reader to
+    // ignore the day that matters.
+    ok('judge', 'judge degraded on ' + degraded.length + '/' + decisions.length + ' decisions in ' + days + ' d ('
+      + Math.round(share * 100) + '%, below the ' + Math.round(JUDGE_FALLBACK_ALARM * 100) + '% alarm)' + causeText);
+  }
+}
+
+// -------------------------------------------------------------- late-drop day
+// A count over a window is the wrong statistic for this failure. The 42
+// late-drops of the 2026-10-19 window were not a slow rise that needed a
+// threshold; they were one bad night — 28 of them on a single day — diluted by
+// the two quiet days either side. Bucketing by day is what turns "42, elevated"
+// into "one day lost a quarter of the day's recalls".
+{
+  const lateDrops = observed.rows.filter((r) => r.event === 'late-drop');
+  const byDay = new Map();
+  for (const r of lateDrops) {
+    const key = localDay(r.t);
+    const bucket = byDay.get(key) || { n: 0, carried: 0 };
+    bucket.n += 1;
+    if (r.why === 'carried-to-next-turn') bucket.carried += 1;
+    byDay.set(key, bucket);
+  }
+  if (lateDrops.length === 0) {
+    say('skip', 'late-drop', 'no late-drops in ' + days + ' d, so nothing to bucket by day');
+  } else {
+    const ranked = [...byDay.entries()].sort((a, b) => b[1].n - a[1].n);
+    const [peakDay, peak] = ranked[0];
+    const share = Math.round((peak.n / lateDrops.length) * 100);
+    // Same-day correlation is the part worth naming: this failure has a cause
+    // that shows up in the log as an unreachable embedder, so whether the worst
+    // day coincides with endpoint errors separates "a bad day on the endpoint"
+    // from "a limit that needs retuning".
+    const errors = observed.rows.filter((r) => r.event === 'error');
+    const sameDay = errors.filter((r) => localDay(r.t) === peakDay);
+    const correlation = errors.length
+      ? (sameDay.length ? '; ' + sameDay.length + ' endpoint-unreachable error(s) that same day (' + sameDay.slice(0, 3).map((r) => localStamp(r.t)).join(', ') + ')' : '; no endpoint-unreachable error recorded that day')
+      : '; no endpoint-unreachable error anywhere in the window';
+    const verdict = peak.n >= 10 || peak.n / lateDrops.length > 0.5 ? 'warn' : 'ok';
+    const message = peakDay + ' accounts for ' + peak.n + '/' + lateDrops.length + ' late-drops in ' + days + ' d (' + share + '%, '
+      + byDay.size + ' day(s) with any' + (peak.carried ? ', ' + peak.carried + ' carried into the next turn' : '') + ')' + correlation;
+    if (verdict === 'warn') {
+      warn('late-drop', message, 'a day this concentrated is an incident, not a trend: line it up against the cold-start log and the endpoint errors before touching the step window');
+    } else {
+      ok('late-drop', message);
+    }
+  }
+}
+
+// ------------------------------------------------------------------- backups
+// The directory the live state lives in is also where every past migration left
+// its "before" copy, and the copies are the same shape as the originals. A
+// stale 27 MB index.ndjson.zstd next to the live one is not merely wasted disk:
+// it is a second answer to "what is in the index right now" for anything that
+// resolves the path by glob, including a human reading the directory. Reported
+// as counts and bytes so the size is visible without opening anything.
+{
+  const scanDirs = [...new Set([statsDir, indexDir].filter(Boolean))];
+  const found = new Map();
+  for (const dir of scanDirs) {
+    let names = [];
+    try { names = await readdir(dir); } catch { continue; }
+    for (const name of names) {
+      if (!/\.bak-|\.before-/.test(name) && !/^pruned-.*\.ndjson$/.test(name)) continue;
+      const full = join(dir, name);
+      let size = 0;
+      let dirLike = false;
+      try {
+        const s = await stat(full);
+        dirLike = s.isDirectory();
+        size = dirLike ? await treeBytes(full) : s.size;
+      } catch { /* vanished mid-scan */ }
+      found.set(full, { size, dirLike });
+    }
+  }
+  const entries = [...found.entries()].sort((a, b) => b[1].size - a[1].size);
+  const total = entries.reduce((a, [, v]) => a + v.size, 0);
+  if (entries.length === 0) {
+    ok('backups', 'no stale backup copies beside the live state in ' + scanDirs.join(', '));
+  } else {
+    const detail = entries.slice(0, 3).map(([p, v]) => basename(p) + ' ' + mb(v.size) + (v.dirLike ? ' (directory)' : '')).join(', ');
+    const message = entries.length + ' stale backup(s), ' + mb(total) + ' total: ' + detail + (entries.length > 3 ? ', ...' : '');
+    if (total > 10 * 1024 * 1024) {
+      warn('backups', message, 'these are read as current state by any path that globs the directory; prune them once the migration they belong to is settled');
+    } else {
+      ok('backups', message);
+    }
+  }
+}
+
+// ------------------------------------------------------------------ config
+// What the profiles declare — the third view, and the one that catches the most
+// common confusion of all: a switch that is declared, correct, and not yet in
+// effect because the host has not restarted since it was written.
 if (declared.length > 0) {
   say('ok', 'config', 'declared in profiles: ' + declared.map((d) => d.profile + ' judge=' + (d.judge || '?') + ' resident=' + (d.resident || '?') + ' gate=' + (d.gate || '?')).join(' | '));
   const wantsJudge = declared.some((d) => d.judge && d.judge !== 'off');
@@ -269,6 +589,52 @@ if (declared.length > 0) {
   }
 } else {
   warn('config', 'no dsh-g-memory block found in any profile', 'the plugin may be running on defaults');
+}
+
+// ------------------------------------------------------------ profile drift
+// The interactive hosts read different files and have run different generations
+// of this config before: on 2026-10-24 the web profile still carried
+// policy.gate=3 with no judge block, while desktop had been on gate=-1.0 +
+// judge=chat since 13 Oct. Reporting each profile on its own cannot show that —
+// every declared value looks deliberate in isolation — and the symptom is that
+// the same plugin behaves differently depending on which host the user opened.
+// Only settings the two hosts are expected to share are compared; embed and
+// rerank endpoints are already covered by the model and cold-start checks.
+const PROFILE_DIFF_FIELDS = [
+  ['judge', 'judge.provider'],
+  ['judgeThreshold', 'judge.threshold'],
+  ['judgeTimeout', 'judge.timeoutMs'],
+  ['resident', 'resident.enabled'],
+  ['residentLimit', 'resident.limit'],
+  ['gate', 'policy.gate'],
+  ['midGate', 'policy.midGate'],
+  ['marginGate', 'policy.marginGate'],
+  ['cardMinSimilarity', 'policy.cardMinSimilarity'],
+  ['cardMargin', 'policy.cardMargin'],
+  ['minContentChars', 'policy.minContentChars'],
+  ['maxEntryChars', 'policy.maxEntryChars'],
+];
+{
+  const pair = declared.filter((d) => d.profile === 'web' || d.profile === 'desktop');
+  if (pair.length >= 2) {
+    const diffs = [];
+    for (const [key, label] of PROFILE_DIFF_FIELDS) {
+      const values = pair.map((d) => String(d[key] ?? '(unset)'));
+      if (values.some((value) => value !== values[0])) {
+        diffs.push(label + ' ' + pair.map((d, i) => d.profile + '=' + values[i]).join(' vs '));
+      }
+    }
+    if (diffs.length === 0) {
+      ok('config', pair.map((d) => d.profile).join(' and ') + ' profiles declare the same gate/judge/card/content settings');
+    } else {
+      warn('config', 'web and desktop profiles disagree on ' + diffs.length + ' setting(s): ' + diffs.join('; '),
+        'the two hosts run different generations of this config while reporting the same plugin version; align them (or write down why they differ) before comparing their traffic');
+    }
+  } else if (pair.length === 1) {
+    const [only] = pair;
+    warn('config', 'only the ' + only.profile + ' profile declares dsh-g-memory; the other interactive profile would run the plugin on defaults',
+      'add the same block to the other profile, or the two hosts will behave differently');
+  }
 }
 
 // What the host is actually running, as opposed to what this shell would run.
@@ -365,7 +731,7 @@ const warnCount = findings.filter((f) => f.level === 'warn').length;
 if (asJson) {
   console.log(JSON.stringify({ at: Date.now(), indexDir, statsPath, findings, verdict: badCount ? 'unhealthy' : warnCount ? 'degraded' : 'healthy' }, null, 1));
 } else {
-  const icon = { ok: '✅', warn: '⚠️ ', bad: '❌' };
+  const icon = { ok: '✅', warn: '⚠️ ', bad: '❌', skip: '➖' };
   let area = '';
   for (const f of findings) {
     if (f.area !== area) { area = f.area; console.log(''); }
@@ -376,4 +742,9 @@ if (asJson) {
   console.log('  ' + (badCount ? '❌ unhealthy' : warnCount ? '⚠️  degraded' : '✅ healthy')
     + '   (' + badCount + ' problems, ' + warnCount + ' warnings)');
 }
-process.exit(badCount > 0 ? 1 : 0);
+// A warning is the degraded verdict, and a degraded deployment is not a healthy
+// one: the failures this script exists to catch (silent judge fallback, a wrong
+// gate floor, an unmeasured cold start) all read as healthy from a switch-level
+// report. --allow-degraded keeps the old "only hard faults fail" behaviour for a
+// cron that cannot act on warnings.
+process.exit(badCount > 0 || (warnCount > 0 && !allowDegraded) ? 1 : 0);

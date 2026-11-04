@@ -1,5 +1,95 @@
 # Changelog
 
+## 0.14.1 — 2026-11-03
+
+**索引层上线三天的实测：它确实进了每个会话，但只覆盖 9/288 张卡 —— 其中 3 条预算被 header 吃掉、1 条被一个从不输出的 footer 白占。**
+
+证据：16 次 `index-layer` 事件，11-03 的 10 个会话全部带索引块；块恒定 9 条 / 1076 字符；卡片已 288 张（250 active）。
+
+### Fixed — 索引层
+
+- **footer 从未被写出来**（`lib/index-layer.mjs`）：预算里按渲染后的 footer 预留字符，正文却只拼了 header + body。于是每次白留约 45 字符，且丢掉了最有价值的一句——"这是 13 条里的全部，还有 275 条可以问"。现在 footer 按最坏情况预留、按实际条数写出，并新增测试钉住"footer 的数字等于可见行数"（旧版会报 40 而只有 13 行可见）。
+- **header 221 → 68 字符**：原文把"这是什么/不可信/怎么读正文"说了三遍，1200 的预算里它吃掉 18%，相当于三条记忆。
+- **每行 94 → 82 字符**：去掉月份尾巴（每行固定 10 字符，而摘要本身通常就带日期）、id 前缀 8 → 6 位。288 张卡的库里 6 位前缀碰撞概率约百万分之一，而索引只是"地图"，`memory_recall` 认的是问题不是 id。
+- **排序改为"最近被触碰"**（写入时间与读取时间的较大者）：原来纯按写入时间倒序，实测九个位置里四条来自同两个项目、近重复，而全库读得最多的那张卡（7 次）因为旧而从未出现。索引如果只显示昨天的活，它是变更日志不是地图。
+- 净效果：**9 条 → 13 条**（1192 字符，仍在 1200 预算内）。
+
+### Changed — 预算与 TTL（2026-11-03 决定）
+
+- **`indexLayer.maxChars` 1200 → 1600**：实测覆盖 **13 → 17 条**（1524 字符，289 张卡）。成本量过：索引块随每步系统提示词走，本机活跃日 **1073 步**（11-03 实测），多 400 字符 ≈ 每步 150 tokens ≈ **¥1–2/月**；存储 **0 字节**（块是渲染出来的）；内存 **0**（索引加载 82 MB + 倒排 296 MB 与这个数字无关）。
+- **`RESULT_TTL_MS` 120s → 300s**：单步问答回合只有一次 `pre-step`，而检索要 2–11 秒，结果 ready 时 turn 已结束。11-03 实测 29 条过期结果里 28 条被下一轮重新检索，距下一次 armed 的**中位数 7 分钟**——两分钟的 TTL 让下一轮把刚做完的活又做了一遍。5 分钟捞回其中一半，同时不会去够"对话已经翻篇"的结果；记忆本身不会变质，变质的是**查询的相关性**，所以不是"越久越好"。重复抑制与门仍然生效，旧结果不会二次进入。
+
+### Changed — doctor 的 late-drop 口径
+
+- `expired` 不再一律算作"丢失的召回"。实测 2026-11-03：29 条过期结果里 **28 条在同会话的后续轮次被重新检索**（距下一次 armed 的中位数 7 分钟）——丢的是那次 embed/rerank 的**工作量**，不是记忆。现在按 `carried / re-ingested / orphaned` 三类分别计数，只有"之后该会话再没有新轮次"的才算真丢失（7 天窗口内 10 条）。
+- 单步问答回合拿不到记忆是结构性的（一次 `pre-step`、检索要 2–11 秒），因此另见下节把 `RESULT_TTL_MS` 从 120s 提到 300s。
+
+### 验证
+
+- `test-index-layer` 增补 2 项（footer 计数、按读取时间排序），共 14 项通过；全量 `npm test` 通过。
+
+## 0.14.0 — 2026-11-01（并入 0.14.1）
+
+**一条索引常驻每步的系统提示词：模型不再需要"想起来"才有记忆。**
+
+缘起：dsh-auto-memory（AskTheWay，DSH discussion 7790）的作者回答了两个问题——写入触发靠提示词纪律而非数值阈值，召回靠 `MEMORY.md` 索引常驻每个请求的系统提示词、正文按需拉取。对照本仓库，第二条正是缺口：本插件所有到达模型的路径都是 waterfall（judge → 检索 → 门 → pre-step 注入），2026-10-25 实测 **83 个会话里 54 个（65%）零注入**，常驻卡最多覆盖 267 张里的 2 张。
+
+### Added — 索引层（`lib/index-layer.mjs`）
+
+- `system-prompt/assemble` 钩子把一段一行条的索引追加到**每一步**装配出的系统提示词：id 前 8 位 + 摘要首句 + 月份 + 状态注记。**只列 current 记忆**（superseded / retired / expired 不进索引），"这些记忆存在"是它唯一的主张，正文仍走 `memory_recall`，块头条目已说明这一点。
+- 预算：`maxChars` 1200、`maxCards` 40、`lineChars` 72；按行整体纳入，不切半行（半行会被读成"被截断的事实"）。摘要经 `neutralize` 且 `<` 转义，卡片是用户内容，不能有机会伪造标签。
+- 成本：卡片库 550 KB NDJSON，按 mtime 缓存，稳态每步只有一次 `stat`。存储缺失或损坏时该 section 消失，**绝不让 prompt 装配抛错**。`interpolate: false`，摘要里的 `{{...}}` 保持字面值。
+- 开关：`indexLayer.enabled` / `DSH_G_MEMORY_INDEX_LAYER`（默认 on）。
+
+### Added — 读计数与软隐藏（`lib/cards.mjs`、`lib/index-layer.mjs`）
+
+- 卡片新增 `readCount` / `lastReadAt`：只有**真的注入出去**时才记账（检索命中块与常驻卡都算），每分钟批量写回一次；写入走 `writeCards` 的合并语义，不会覆盖同时刻 `memory_note` 写下的卡。
+- `staleCard()`：零读取且超过 `staleAfterDays`（默认 90 天）的卡片**从索引层隐藏**，但仍可被召回——这是可见性规则，不是删除。作者的同名机制（`staleAfterDays`）是这条的直接参照。
+
+### Fixed — CLI 与部署配置不再是两套空间（`lib/profile.mjs`）
+
+- 实测 2026-11-01：profile 写 `embeddinggemma-2`，索引 header 也是 `embeddinggemma-2`，而 shell 里的 `dsh-g-memory selfcheck` 报 `embed-gemma`。这个不一致不是显示问题：`build` 会把模型名变化当成换了嵌入空间，**全量重嵌并写出一个宿主 live-index 会拒绝的 header**（`model-mismatch` 后后台索引永久停摆）。
+- CLI 现在按宿主的同一优先级解析：环境变量 → profile 的 `dsh-g-memory.config.embed` → 包默认。只读 `embed` 块的四个标量，行扫描而非 YAML 解析（本包无运行时依赖，猜错必须是"少一个默认值"而不是"构建坏掉"）。
+
+### Fixed — 常驻卡的作用域（`lib/auto-recall.mjs`）
+
+- `residentFloor` 原是 `#run` 里的局部变量且只在 `turnCounts === 1` 时计算：首轮之后它就不存在了，于是 judge 跳过或检索落空都会变成静默。现在按会话缓存（`residentFloors`），首轮没消费掉的兜底在后续轮次仍可作为 floor 提供，且**不重复计算**（选择结果已缓存，不多花一次 embedding）。重复注入仍由 400 字符签名抑制。
+
+### Fixed — `memory-doctor` 的 `model (unrecorded)`
+
+- `MemoryIndex` 只发布了 `size` / `dim` 两个 getter，`index.model` 恒为 undefined，于是记着 `embeddinggemma-2` 的索引被报成"未记录模型"。补 `get model()`。
+
+### 验证
+
+- 新增 `test-index-layer`（12 项：预算、整行截断、非 current 不出现、转义、缓存、空库不出 section、坏库不抛、关开关不注册）、`test-profile`（9 项：解析、名字序、环境/显式覆盖优先级）、`test-card-reads`（5 项：累加、未知 id 不写、不丢并发写入的卡、读后不再 stale）。
+- `test-resident` 新增"首轮之后工作集仍在"（此前会失败：floor 是局部变量）。
+- 全量 `npm test` 通过。
+
+## 0.13.2 — 2026-10-25（并入 0.14.1）
+
+**7 天真实遥测的结论：1340 条用户消息只换来 54 次记忆注入（4%），83 个会话里 54 个（65%）全程零注入。三处缺陷叠加造成这个数，本版逐一修掉。**
+
+诊断证据：`~/.dsh/dsh-g-memory/auto-recall-stats.jsonl`（2026-10-18～25）+ 97 条真实 query 的管线重放。
+
+### Fixed — 召回率
+
+- **首轮不再短路整条检索**（`lib/auto-recall.mjs`）：resident 命中后原本直接 `return`，judge、embed、recall、rerank、gate 全不跑。实测一个新会话的完整轨迹是 `armed → resident → inject` 加 14 条空步。现在卡片块保留为 `residentFloor`：立即可注入（不等 2–11 s 的检索），检索若也命中则两块合并（检索块在前，避开 `injected` 前 400 字符的重复抑制），检索什么都没找到时退回卡片——"会话起点记忆一定在"从否决权变成兜底。
+- **cwd 用 session 的真实 workspace**（`sessionCwd()`）：原来 `this.options.cwd` 全仓库从未赋值，实际取宿主进程 cwd，即 `~/.dsh/profiles/desktop`。于是 resident 的 `cwd` 信号匹配的是 profile 目录名——卡片正文里出现 "desktop" 就算命中。实测同一句开场白，旧口径注入「10-20 维护记录 + 另一个项目 dsh-rea-mcp」，新口径注入「0.13.1 已发布」。`resident` / `armed` 事件新增 `ws` 字段。
+- **内容过滤按信息密度判长度**（`lib/quality.mjs`）：`minContentChars: 60` 原按原始字符数比，中文一句 30 字就顶到 60，砍掉的是整句而不是碎片。重放 97 条真实 query：137/1046 候选被判 `too-short`（13.1%），其中 16 条是该 pool 的最高分；12/97 回合（12.4%）因此从"有注入"变成"零注入"。现改为 `weightedLength = ascii + 2×CJK`（码点区间判定，无依赖；astral 表意文字算 2 而非 4），`minContentChars` 语义变成"加权后的最小长度"，`maxEntryChars` 仍用原始字符数。
+- **user 角色豁免长度规则**：78/137 被吃掉的候选是 user 的短指令/偏好，短的用户消息是上下文不是答案。`role === 'user'` 时只跳过长度规则，json / tool-fragment / path-only / log-dump / too-long 照旧；空白文本即便 user 也仍判 `too-short`。
+- **空池 reason 不再把运维引向错误阈值**（`lib/policy.mjs`）：有内容类丢弃时以 `content filter dropped N candidate(s) (…): nothing left cleared the floor (long-term floor X)` 归因；没有时保留原文案。修复前 23 条日志写成"地板不够"，而真正原因是最高分候选被内容过滤器丢掉（`top1=4.216` 却能报 `floor -1`）。
+
+### Changed — 遥测
+
+- `inject` 的 `why` 区分 `ready-resident-floor`：卡片兜底不是检索命中，日志不再把两者写成同一个词。
+- `dispose()` 清 `injected` 与 `turnCounts`：重挂载时前者会压掉新附件从未展示过的块，后者让 `turnCounts` 从 1 以上开始，常驻层整个会话都不跑。
+
+### 验证
+
+- 回归：`test-resident` 新增"首轮拿到卡片，且检索仍在后面跑"（断言两次 embed：resident 的 query 向量 + 检索的；只有一次说明又被短路了）。
+- `test-quality` / `test-policy` 新增 CJK 加权边界、user 豁免、too-long 未加权、reason 归因共 4 组检查。
+- 全量 `npm test` 通过（26 个脚本）。
+
 ## 0.13.1 — 2026-10-24
 
 **CLI 成为跨工具的门：`recall` 自动采用索引里记录的 task 前缀，并新增 `--json`。**

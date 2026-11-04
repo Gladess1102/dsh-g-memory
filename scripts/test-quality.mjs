@@ -5,13 +5,15 @@
  * Pure predicates, plus one integration pass through `selectForInjection` — no
  * index, no embedder, no reranker, so this runs anywhere. The negatives are the
  * shapes measured in the 2026-10-24 review: a `run_code` JSON fragment injected into
- * a live session, entries under 60 characters (23-27% of injected entries), and
- * entries clipped mid-sentence at the preview cap (57-68% of blocks).
+ * a live session, entries under the content floor (23-27% of injected entries), and
+ * entries clipped mid-sentence at the preview cap (57-68% of blocks). The length rule
+ * was recalibrated on 2026-10-25 — CJK-weighted, and exempt for user turns — which is
+ * why the floor cases below are written in both scripts.
  *
  *   node scripts/test-quality.mjs
  */
 import assert from 'node:assert/strict';
-import { QUALITY_LIMITS, contentRejectReason, pickDegradedCards, formatLocalTime } from '../lib/quality.mjs';
+import { QUALITY_LIMITS, contentRejectReason, pickDegradedCards, formatLocalTime, weightedLength } from '../lib/quality.mjs';
 import { selectForInjection, renderRecall, INJECTION_LIMITS } from '../lib/inject.mjs';
 import { selectByPolicy } from '../lib/policy.mjs';
 import { rrfFloor } from '../lib/store.mjs';
@@ -47,6 +49,59 @@ await check('a fragment is rejected as too-short', () => {
   assert.equal(contentRejectReason({ text: 'x'.repeat(QUALITY_LIMITS.minContentChars - 1) }), 'too-short');
   assert.equal(contentRejectReason({ text: 'x'.repeat(QUALITY_LIMITS.minContentChars) }), null,
     'the threshold itself is content, not a fragment');
+});
+
+/** A 30-character Chinese sentence: exactly 60 in Latin-character equivalents. */
+const CJK_EDGE = '把工作台的前端和后端都完整审查一次，修掉发现的全部缺陷并复核';
+
+await check('length is weighted by what a CJK character carries', () => {
+  // The floor was calibrated on Latin text and compared against a raw character
+  // count, so its default of 60 meant 60 Chinese characters — roughly twice the
+  // information it was chosen for. Measured on 2026-10-25 over 97 real queries
+  // (1046 candidates): 137 entries were dropped as too-short, 16 of them their
+  // pool's highest-scored candidate, and what they were was whole short Chinese
+  // sentences (p50 32 characters), not the paths and log lines the rule was
+  // written for — the index layer had already filtered those.
+  assert.equal(weightedLength(CJK_EDGE), QUALITY_LIMITS.minContentChars, '30 CJK characters = 60 Latin ones');
+  assert.equal(weightedLength(CJK_EDGE.slice(0, -1)), QUALITY_LIMITS.minContentChars - 2);
+  assert.equal(contentRejectReason({ text: CJK_EDGE }), null, 'a 30-character Chinese sentence is content');
+  assert.equal(contentRejectReason({ text: CJK_EDGE.slice(0, -1) }), 'too-short', 'one character less is not');
+  assert.equal(weightedLength('x'.repeat(60)), 60, 'Latin text is unchanged: one character, one unit');
+  assert.equal(contentRejectReason({ text: 'x'.repeat(59) }), 'too-short', '59 Latin characters are a fragment');
+  assert.equal(weightedLength('一段短文本'), 10, 'the weighting does not make a 5-character fragment content');
+  assert.equal(contentRejectReason({ text: '一段短文本' }), 'too-short');
+});
+
+await check('a user message is exempt from the length rule, and only from it', () => {
+  // A user turn is context or a preference, not an answer: a short one is still the
+  // whole turn. "不需要节省时间与token资源，完成这个项目更加重要" is 26 characters
+  // and carried a decision that governed a whole session.
+  const said = '不需要节省时间与token资源，完成这个项目更加重要。';
+  assert.ok(weightedLength(said) < QUALITY_LIMITS.minContentChars, 'the fixture must be short by the weighted rule');
+  assert.equal(contentRejectReason({ text: said }), 'too-short', 'without a role it is still a fragment');
+  assert.equal(contentRejectReason({ text: said, role: 'user' }), null, 'a user turn is context');
+  assert.equal(contentRejectReason({ text: said, role: 'assistant' }), 'too-short', 'an answer must stand alone');
+  // The shape rules are not exempt: they say what the text *is*, not how long it is.
+  assert.equal(contentRejectReason({ text: '{"callId": "call_9f2c7a41b6e3"}', role: 'user' }), 'json');
+  assert.equal(contentRejectReason({ text: '见下 "arguments": {"timeoutMs":120000}', role: 'user' }), 'tool-fragment');
+  assert.equal(contentRejectReason({ text: '/Users/someone/.dsh/local-keep/x.mjs', role: 'user' }), 'path-only');
+  // A leading `[` would be read as serialised JSON first (the order of the rules), so
+  // the fixture starts with prose and puts the level lines below it.
+  assert.equal(contentRejectReason({ text: '启动失败\n[ERROR] connect ECONNREFUSED 11436\n[ERROR] retry', role: 'user' }), 'log-dump');
+  assert.equal(contentRejectReason({ text: LONG.repeat(40), role: 'user' }), 'too-long');
+  assert.equal(contentRejectReason({ text: '   ', role: 'user' }), 'too-short', 'an empty turn is not context');
+});
+
+await check('the too-long ceiling is raw characters, not weighted ones', () => {
+  // `maxEntryChars` bounds the injected block, and the block is counted in
+  // characters: a dense entry does not get to be twice as long because each of its
+  // characters carries twice as much. The weighting applies to the floor only.
+  const dense = LONG.repeat(13).slice(0, 760);
+  assert.equal(dense.length, 760);
+  assert.ok(weightedLength(dense) > QUALITY_LIMITS.maxEntryChars,
+    `the fixture must be over the ceiling once weighted; got ${weightedLength(dense)}`);
+  assert.equal(contentRejectReason({ text: dense }), null, 'under the raw ceiling, so it is content');
+  assert.equal(contentRejectReason({ text: dense }, { maxEntryChars: 700 }), 'too-long', 'the raw count is what the ceiling reads');
 });
 
 await check('serialised JSON is rejected as json', () => {
@@ -216,6 +271,16 @@ await check('the automatic path applies the same two rules', () => {
   assert.equal(short.selected.length, 0);
   assert.equal(short.droppedReasons['too-short'], 1, 'the reason is counted, not inferred from a lower count');
   assert.match(short.reason, /too-short/);
+  assert.match(short.reason, /^content filter dropped 1 candidate\(s\) \(too-short×1\): nothing left cleared the floor/,
+    'the reason must name the content filter, not the age floor it never consulted');
+  assert.match(short.reason, /long-term floor/, 'the floor value stays in the text for existing greps');
+
+  // The same path admits a short user message: the length rule is what changed, so
+  // the wiring has to be checked here and not only on the predicate.
+  const said = selectByPolicy([
+    { text: '不需要节省时间与token资源，完成这个项目更加重要。', role: 'user', score: 4.2, time: Date.now() },
+  ], { policy: floors });
+  assert.equal(said.selected.length, 1, 'a short user message is context the automatic path may inject');
 
   const degraded = selectByPolicy([
     card({ similarity: 0.90, cardId: 'a' }),

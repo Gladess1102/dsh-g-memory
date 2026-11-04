@@ -130,12 +130,20 @@ await check('off by default: nothing is injected and nothing is recorded', async
   assert.ok(ar.pending.get('agent-off'), 'the ordinary path still produced a result');
 });
 
-await check('the opening turn gets the named card, and only the named card', async () => {
+await check('the opening turn gets the named card, and retrieval still runs behind it', async () => {
   const ar = makeRecall({ enabled: true });
+  const embedsBefore = embedRequests;
   ar.start('agent-on', '继续 dsh-g-memory 插件的活，把常驻层做完');
   await new Promise((r) => setTimeout(r, 700));
   const entry = ar.pending.get('agent-on');
   assert.equal(entry?.status, 'ready', 'the working set is injected');
+  // The regression this pins: a resident hit used to `return` out of #run, so a
+  // session's first message never reached the judge or the retriever — 65% of 83
+  // sessions injected nothing at all (measured 2026-10-25). Two embeddings are the
+  // signature of the fixed order: the resident selector's query vector, then the
+  // retriever's. One means the turn was short-circuited again.
+  assert.ok(embedRequests - embedsBefore >= 2,
+    'the opening turn ran retrieval after the resident layer (' + (embedRequests - embedsBefore) + ' embed call(s))');
   assert.match(String(entry.text), /常驻层用卡片的确定性命名匹配/, 'the matching card is there');
   assert.ok(!/香水/.test(String(entry.text)), 'the unrelated card is not');
   assert.ok(!/旧结论已被取代/.test(String(entry.text)), 'a superseded memory is never surfaced');
@@ -176,6 +184,24 @@ await check('later turns do not re-inject the working set', async () => {
   await new Promise((r) => setTimeout(r, 500));
   const log = await eventsFor('agent-later');
   assert.equal(log.filter((e) => e.event === 'resident').length, 1, 'the resident layer speaks once per session');
+});
+
+await check('the working set survives the first turn: a later turn still gets it as its floor', async () => {
+  // The regression this pins: the floor used to be a local in `#run` computed
+  // only on `turnCounts === 1`, so from the second turn on there was no floor at
+  // all — a judge skip or an empty retrieval then produced silence for the rest
+  // of the session, even though the cards had already been selected once.
+  const ar = makeRecall({ enabled: true });
+  ar.start('agent-floor-persist', '继续 dsh-g-memory 插件的活');
+  await new Promise((r) => setTimeout(r, 700));
+  assert.match(String(ar.pending.get('agent-floor-persist')?.text ?? ''), /常驻层用卡片的确定性命名匹配/);
+  ar.take('agent-floor-persist'); // the model has seen this turn's block
+  ar.start('agent-floor-persist', '今天天气不错，随便聊聊吧');
+  await new Promise((r) => setTimeout(r, 700));
+  const later = ar.pending.get('agent-floor-persist');
+  assert.ok(later, 'the later turn produced something');
+  assert.match(String(later.text ?? ''), /常驻层用卡片的确定性命名匹配/, 'the working set is still available as a floor');
+  assert.ok(ar.residentFloors.has('agent-floor-persist'), 'and it is cached, not recomputed');
 });
 
 await check('no shared name anywhere: the layer stays silent', async () => {

@@ -103,10 +103,20 @@ await check('a turn that was decided against does not get the carried memory', a
   assert.ok(await sawLateDrop('carry-over-after-empty-turn'));
 });
 
+await check('a result from two minutes ago is still usable (the TTL was raised from 120 s)', async () => {
+  // Measured 2026-11-03: 28 of 29 expired results were followed by a new turn in
+  // the same session, median gap 7 minutes. Two minutes was throwing away work
+  // the next turn immediately repeated.
+  const recall = makeRecall();
+  recall.pending.set('a', ready('A-BIT-OLD', Date.now() - 121_000));
+  assert.equal(recall.take('a'), 'A-BIT-OLD', 'two minutes used to be past the deadline');
+  assert.equal(recall.lastTakeWhy, 'ready');
+});
+
 await check('an expired carry-over is dropped, not injected', async () => {
   const recall = makeRecall();
   recall.pending.set('a', running());
-  recall.carried.set('a', { text: 'STALE', at: Date.now() - 121_000 });
+  recall.carried.set('a', { text: 'STALE', at: Date.now() - 301_000 });
   assert.equal(recall.take('a'), '');
   assert.equal(recall.lastTakeWhy, 'pending');
   assert.ok(await sawLateDrop('carry-over-expired'));
@@ -143,7 +153,7 @@ await check('a new turn parks the previous outcome instead of discarding it', as
 
 await check('an expired outcome is still a drop', async () => {
   const recall = makeRecall();
-  recall.pending.set('a', ready('OLD', Date.now() - 121_000));
+  recall.pending.set('a', ready('OLD', Date.now() - 301_000));
   recall.arm('a', 'NEW');
   assert.equal(recall.carried.has('a'), false);
   assert.ok(await sawLateDrop('superseded-expired'));

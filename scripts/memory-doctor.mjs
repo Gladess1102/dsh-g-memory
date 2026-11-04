@@ -207,8 +207,11 @@ if (!rerankCfg.url && observed.gate && observed.gate.reranked === true) {
 }
 
 // ------------------------------------------------------------------- cards
+/** Read by the traffic section below, to tell "no cards" from "layer not armed". */
+let cardCount = 0;
 try {
   const cards = await readCards(defaultCardPath());
+  cardCount = cards.length;
   if (cards.length === 0) warn('cards', 'no cards: nothing has been consolidated yet', 'consolidation runs after a session goes quiet; check consolidate.enabled');
   else {
     const now = Date.now();
@@ -248,14 +251,39 @@ try {
    */
   const lateDrops = rows.filter((r) => r.event === 'late-drop');
   const carried = lateDrops.filter((r) => r.why === 'carried-to-next-turn').length;
-  const lostLate = lateDrops.length - carried;
+  /**
+   * Expired results that a later turn never replaced.
+   *
+   * `expired` used to be counted as a lost recall, and on this deployment it
+   * almost never is: measured 2026-11-03, 28 of 29 expired results were followed
+   * by a new `armed` turn in the same session (p50 gap 7 minutes), which starts a
+   * fresh recall. What was lost is the *work* — one embedding, one rerank — not
+   * the memory. Only the ones with no later turn are a recall the model never
+   * got the chance to see, and those are what this number now counts.
+   */
+  const expiredRows = lateDrops.filter((r) => r.why === 'expired' || r.why === 'superseded-expired');
+  const rowsBySession = new Map();
+  for (const row of rows) {
+    const key = row.session;
+    if (typeof key !== 'string' || key === '') continue;
+    const list = rowsBySession.get(key) ?? [];
+    list.push(row);
+    rowsBySession.set(key, list);
+  }
+  const orphanedExpired = expiredRows.filter((row) => !(rowsBySession.get(row.session) ?? [])
+    .some((later) => later.t > row.t && later.event === 'armed')).length;
+  const reingested = expiredRows.length - orphanedExpired;
+  const lostLate = lateDrops.length - carried - reingested;
 
   if (rows.length === 0) warn('traffic', 'no decisions recorded in the last ' + days + ' days', 'is DSH_G_MEMORY_AUTO_STATS pointing at ' + statsPath + '?');
   else {
     ok('traffic', 'last ' + days + ' d: armed ' + armed + ', inject ' + injected + ', gate pass/drop ' + gatePass + '/' + gateDrop
       + (judged ? ', judge ' + judged + ' (fire ' + judgeFire + ')' : '')
       + (resident ? ', resident ' + resident : '') + (hints ? ', hint ' + hints : '')
-      + ', late-drop ' + lateDrops.length + (carried ? ' (' + carried + ' carried into the next turn, ' + lostLate + ' lost)' : ''));
+      + ', late-drop ' + lateDrops.length
+      + (lateDrops.length > 0
+        ? ' (' + carried + ' carried, ' + reingested + ' re-ingested by a later turn, ' + lostLate + ' orphaned)'
+        : ''));
     // The silent patterns, named. Each of these has happened for real.
     if (armed > 20 && injected === 0 && gatePass === 0) {
       bad('traffic', 'armed ' + armed + ' times, the gate never passed: automatic injection is effectively off',
@@ -265,15 +293,29 @@ try {
       warn('traffic', 'the judge fired ' + judgeFire + ' times but nothing was ever handed to the model', 'is DSH_G_MEMORY_HINT off, or was every fire also a gate pass?');
     }
     if (lostLate > 0) {
-      warn('traffic', 'late-drop lost ' + lostLate + ' recall(s) that were never consumed' + (carried ? ' (and carried ' + carried + ' into the next turn)' : ''),
-        'expected occasionally; a rising count means the step window is closing before retrieval finishes');
-    } else if (carried > 0) {
-      ok('traffic', carried + ' recall(s) finished after their turn\'s last step and were carried into the next one');
+      warn('traffic', 'late-drop orphaned ' + lostLate + ' recall(s): finished after their turn, and no later turn in that session asked again',
+        'this is the real loss; a rising count means the step window is closing before retrieval finishes AND the session went quiet');
+    } else if (carried + reingested > 0) {
+      ok('traffic', carried + ' recall(s) carried into the next turn, ' + reingested + ' expired and were re-ingested by the next turn — work spent, memory not lost');
     }
     if (injected > 0) {
       const ratios = rows.filter((r) => r.event === 'inject').map((r) => Number(r.chars) || 0);
       const avg = Math.round(ratios.reduce((a, b) => a + b, 0) / ratios.length);
       ok('traffic', 'injections averaged ' + avg + ' characters');
+    }
+    // The index layer has no per-turn event: the only evidence it is wired at all
+    // is a `index-layer` line, written when the rendered block changes. Cards
+    // present but no line in the window means the host is still running a build
+    // from before the layer — it is a source change, so only a restart arms it.
+    // "Every signal green, channel absent" is the failure this doctor exists for.
+    const layerRows = rows.filter((r) => r.event === 'index-layer');
+    if (layerRows.length > 0) {
+      const last = layerRows[layerRows.length - 1];
+      ok('traffic', 'index layer: ' + last.shown + ' entries (' + last.chars + ' chars'
+        + (Number(last.hidden) > 0 ? ', ' + last.hidden + ' stale hidden' : '') + ') in the assembled prompt');
+    } else if (cardCount > 0) {
+      warn('traffic', 'cards exist (' + cardCount + ') but the index layer never rendered in the last ' + days + ' d',
+        'it rides system-prompt/assemble, which is a source change: restart the host and check indexLayer.enabled before reading this as "nothing to show"');
     }
   }
 }

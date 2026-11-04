@@ -89,6 +89,36 @@ await check('the margin is skipped when fewer than three candidates were scored'
   assert.equal(out.selected.length, 2, 'an undefined margin must not be read as a small one');
 });
 
+await check('an empty recall names the gate that emptied it', () => {
+  // Two empty pools, two different repairs. The reason used to blame the age floor
+  // unconditionally, so a pool the content filter had emptied was logged as "no
+  // entry cleared its age tier's floor" — 23 recorded turns sent an operator (and
+  // this suite's author) to a threshold that had never been consulted. The value
+  // stays in the string because existing greps read it.
+  const floors = { gate: rrfFloor(), midGate: rrfFloor(), recentGate: rrfFloor(), marginGate: 0 };
+  const aged = () => ({ text: `${LONG}（第 0 条）`, score: 0, time: Date.now() - 30 * 86_400_000 });
+
+  const content = selectByPolicy([
+    { text: '一段短文本', score: 4.2 },
+    { text: '另一段短文本', score: 4.1 },
+    aged(),
+  ], { policy: floors });
+  assert.equal(content.selected.length, 0);
+  assert.deepEqual(content.droppedReasons, { 'too-short': 2 });
+  assert.match(content.reason, /^content filter dropped 2 candidate\(s\) \(too-short×2\): nothing left cleared the floor/,
+    'the content filter is the cause, so it is named first');
+  assert.match(content.reason, /long-term floor/, 'the floor value stays in the text for existing greps');
+
+  const floor = selectByPolicy([aged()], { policy: floors });
+  assert.equal(floor.selected.length, 0);
+  assert.deepEqual(floor.droppedReasons, {}, 'nothing here was dropped for its content');
+  assert.match(floor.reason, /^no entry cleared its age tier's floor \(long-term floor/, 'an empty pool with no content drops keeps the floor wording');
+  assert.doesNotMatch(floor.reason, /content filter/);
+
+  assert.deepEqual(Object.keys(floor).sort(), ['dropped', 'droppedReasons', 'reason', 'selected', 'tier'],
+    'the return shape is unchanged: auto-recall reads these fields');
+});
+
 await check('the head is measured before the floor, not after it', async () => {
   // Only one candidate clears the floor (gate 0), and the head is far above the
   // rest: the margin has no reason to veto it.

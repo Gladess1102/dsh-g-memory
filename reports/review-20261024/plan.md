@@ -1,5 +1,9 @@
 # dsh-g-memory 综合审查与改进计划（2026-10-24）
 
+> **状态：已实施 — 0.13.0**（commit `5cf2bb6`，tag `v0.13.0`）。实施规格见 [impl-spec.md](impl-spec.md)；
+> 落地范围：P0 全部、P1 全部（含配置对齐与测试门禁）、P2 的 eval/审计脚本与 baseline 门禁；
+> 重启 DSH App 后生效（profile symlink 直连仓库）。
+
 > 依据：三份并行审查 + Lead 抽样复核
 > - [timeline.md](timeline.md)：版本/commit/配置纪元与召回指标对齐（0.6.0 → 0.12.0 + 10-22 未发布）
 > - [recall-quality.md](recall-quality.md)：230 个会话、1447 回合、425 个注入块、639 条条目 + 72 块人工判读

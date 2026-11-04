@@ -87,6 +87,57 @@ never injected into a turn that was already decided against, expires with the
 result TTL, and is logged (`late-drop` with `why: carried-to-next-turn`, then
 `inject` with `why: carried`).
 
+The TTL is **5 minutes** (raised from 2 on 2026-11-03). The number comes from this
+deployment: of the 29 results that expired in three days, 28 were followed by a new
+turn in the same session, and the median gap was 7 minutes — so at two minutes the
+work was thrown away and the next turn immediately repeated it. Five minutes
+catches about half of that without ever reaching for a result the conversation has
+moved past; the freshness of the *memory* was never the constraint (a card does not
+spoil), the relevance of the *query* is.
+
+### The index layer: memory in every system prompt
+
+Everything above reaches the model through a *waterfall*: a recall has to be judged
+worth doing, retrieved, gated and then injected before a step. That is four things
+going right on one turn, and they do not always — measured 2026-10-25, **65% of
+sessions (54 of 83) never injected a single memory**, and the resident layer could
+show at most two cards out of 267.
+
+The index layer is the one channel that does not depend on any of that. A bounded
+block of one-line entries — id prefix, first line of the summary — is appended to
+the **assembled system prompt on every step**, so the model opens each turn knowing
+which memories exist. It is a map, not an answer: nothing is claimed to be relevant,
+the text still arrives only through `memory_recall`, and the block says so in its
+own header. The trade is the same one dsh-auto-memory's author argues for (DSH
+discussion 7790): the index is always present, the body is fetched on demand.
+
+- Budgeted: `maxChars` (**1600**) total, `maxCards` (40) entries, each summary cut
+  to `lineChars` (72). A line is added whole or not at all — a block that ended
+  mid-line would read as a truncated fact. Measured on a 289-card store
+  (2026-11-03): **17 entries in 1524 characters**, after the header was cut from 221 to 68 characters
+  and the month tail (10 characters on every line) was dropped. The footer states
+  `(17 shown; 289 total, the rest by asking.)` — it says the index is incomplete,
+  which is the difference between "you have nine memories" and "you have nine of
+  288".
+- The budget costs about 150 tokens on **every** model step (an active day here is
+  1,073 steps), which measured out at a few yuan a month and zero bytes of storage.
+  What it does *not* cost is memory: the index block is rendered per request, while
+  the 82 MB load and the 296 MB inverted file belong to the index itself and are
+  unchanged by this number.
+- Ordered by *last touched* — the later of "written" and "read" — not by write
+  time. Newest-first alone put nine entries from two projects on screen while the
+  store's most-read card (7 reads) never appeared, because it was old.
+- Only *current* memories appear: `superseded`, `retired` and `expired` cards are
+  left out. A summary is neutralised and `<` is escaped, like every other memory
+  surface, because a card is user content and could otherwise forge a tag.
+- Zero-read cards older than `staleAfterDays` (90) drop out of the index but stay
+  recallable — a visibility rule, not a deletion. See [Forgetting](#forgetting).
+- Read by mtime cache: the store is a 550 KB NDJSON file, so it is re-read only
+  when it changes (`stat` per step is the steady-state cost). A missing or
+  unreadable store removes the section; it never breaks prompt assembly.
+- Turn it off with `indexLayer: { enabled: false }` or
+  `DSH_G_MEMORY_INDEX_LAYER=off`.
+
 ## Storage
 
 int8 quantisation is effectively lossless here: mean cosine distortion
@@ -260,6 +311,14 @@ withdrawn. Three states handle that, all derived rather than stored where possib
 | `expired` | the card's `expires` date has passed | left out of injection; labelled when asked for |
 | `superseded` | a newer card named it in `supersedes` | left out of injection; labelled `superseded by <id>` |
 | `retired` | `memory_forget` withdrew it | left out of injection; kept as evidence |
+| `stale` | never read and untouched for `indexLayer.staleAfterDays` (90) | hidden from the index layer; still recallable by asking |
+
+`readCount` / `lastReadAt` are written whenever a card is actually injected (both
+the retrieved block and the resident working set), batched once a minute — the only
+evidence this store has about whether a memory is still earning a line. The
+staleness rule is deliberately weak: "unread" means "never reached a model", not
+"not useful", which is why the window is three months and why the card is hidden
+rather than removed.
 
 `memory_note` accepts `supersedes` (an id, an id prefix, or a distinctive fragment of
 the summary) and `expires` (`YYYY-MM-DD`). When a new memory closely resembles an
@@ -363,7 +422,7 @@ This is deliberately one-way: another agent can read, but writing still goes thr
 |---|---|---|
 | Chunk text for embedding | `DSH_G_MEMORY_EMBED_URL` (default `http://127.0.0.1:11439`) | Every `build`, and every query |
 | Query + top candidates for synthesis | `DSH_G_MEMORY_LLM_URL` | Only if you set that variable |
-| The turn's own messages, redacted, for the judge | the chat judge endpoint (`DSH_G_MEMORY_JUDGE_CHAT_URL`) | On every turn the judge is asked; resident cards answer the opening turn and never reach it |
+| The turn's own messages, redacted, for the judge | the chat judge endpoint (`DSH_G_MEMORY_JUDGE_CHAT_URL`) | On every turn the judge is asked, including a session's first one — resident cards are offered alongside it rather than instead of it |
 
 Two consequences worth stating plainly:
 
@@ -395,10 +454,12 @@ All optional; defaults suit a single-machine setup.
 | `DSH_G_MEMORY_JUDGE_THRESHOLD` | `0.5` | Below this confidence a non-explicit verdict does not fire. |
 | `DSH_G_MEMORY_JUDGE_TIMEOUT_MS` | `8000` | Decision timeout. Every judge failure degrades to "do not retrieve", never to "retrieve everything". |
 | `DSH_G_MEMORY_JUDGE_CHAT_URL` / `_MODEL` / `_KEY_NAME` / `_SESSION` | the opencode-go gateway / `deepseek-flash` / `OPENCODE_GO_API_KEY` / `dsh-g-memory` | The `chat` backend. The key name is resolved from the environment first and then from `$DSH_HOME/.credentials.yaml` — a host that starts a plugin with a fixed `--env` list will not have it in the environment, and a judge that answers 401 degrades to "do not retrieve" silently. |
-| `DSH_G_MEMORY_RESIDENT` | `off` | Resident cards: the working set a session starts with, ranked by names the opening message and the workspace share — never by retrieval score. |
+| `DSH_G_MEMORY_RESIDENT` | `off` | Resident cards: the working set a session starts with, ranked by names the opening message and the workspace share — never by retrieval score. The workspace is the session's own creation cwd, not the host process's working directory. On the opening turn a card block is offered immediately and retrieval still runs; whichever finds more settles the turn, and the cards are used alone only when retrieval finds nothing. |
 | `DSH_G_MEMORY_RESIDENT_LIMIT` | `2` | Cards per session. |
 | `DSH_G_MEMORY_RESIDENT_MIN_SCORE` | `0.5` | Below this a card has no deterministic reason to be there. |
 | `DSH_G_MEMORY_RESIDENT_ENTRY_CHARS` / `_MAX_CHARS` | `320` / `1600` | Per-card and whole-block budgets. The injection frame alone is 792 characters, so a card that does not fit is trimmed rather than dropped. |
+| `DSH_G_MEMORY_MIN_CONTENT_CHARS` | `60` | Shortest entry worth injecting, **in Latin-character equivalents**: one CJK character counts two, so `60` is about 30 Chinese characters. Below it the entry is a fragment and is dropped rather than trimmed. Entries from a `user` turn skip this length rule alone — a short instruction is context, not an answer — but still face every shape rule (`json`, `tool-fragment`, `path-only`, `log-dump`, `too-long`). |
+| `DSH_G_MEMORY_MAX_ENTRY_CHARS` | `1200` | Longest entry worth injecting, counted in **raw** characters (not weighted, and not exempt for `user` turns). An oversized entry is dropped whole rather than clipped, because a memory cut mid-sentence reads as complete. |
 | `DSH_G_MEMORY_EMBED_URL` | `http://127.0.0.1:11439` | Embedding endpoint. |
 | `DSH_G_MEMORY_EMBED_MODEL` | `embed-gemma` | Model name sent to the endpoint. |
 | `DSH_G_MEMORY_EMBED_QUERY_PREFIX` | *(empty)* | Instruction prepended to every **query** before it is embedded. EmbeddingGemma 2 wants `task: question answering | query: ` (or `task: search result | query: `); leave empty for a model that wants no prefix. |
@@ -424,6 +485,9 @@ All optional; defaults suit a single-machine setup.
 | `DSH_G_MEMORY_RERANK_PATH` | `/v1/rerank` | Reranker route, for servers that do not use the default. |
 | `DSH_G_MEMORY_RERANK_TIMEOUT_MS` | `30000` | Rerank request timeout. |
 | `DSH_G_MEMORY_CARDS` | `$DSH_HOME/dsh-g-memory/cards.ndjson` | Card store path. |
+| `DSH_G_MEMORY_INDEX_LAYER` | `on` | The one-line memory index in every system prompt. `off` removes the channel entirely (no section, no reads). |
+| `DSH_G_MEMORY_INDEX_LAYER_MAX_CHARS` / `_MAX_CARDS` / `_LINE_CHARS` | `1200` / `40` / `72` | Budget of the index block, number of entries, and how much of a summary one entry shows. |
+| `DSH_G_MEMORY_INDEX_LAYER_STALE_DAYS` | `90` | Zero-read cards older than this are hidden from the index. `0` disables the rule. |
 | `DSH_G_MEMORY_CARD_MIRROR` | `on` | `off` disables the human-readable `cards/MEMORY.md` mirror, for reading as well as writing. |
 
 Every knob below can also be set per deployment in the composition

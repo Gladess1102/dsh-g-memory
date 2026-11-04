@@ -32,6 +32,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { extractUnits, decompressZstdFile } from '../lib/session-source.mjs';
 import { embedAdaptive, embedBatch, probe, resolveConfig } from '../lib/embedder.mjs';
+import { applyProfileDefaults } from '../lib/profile.mjs';
 import { l2Normalize, quantizeInt8, packVector } from '../lib/vector.mjs';
 import { findSchemaValidator } from '../lib/harness.mjs';
 import { parseCard, readCards, writeCards, withVector, formatCard, tagIndex, defaultCardPath } from '../lib/cards.mjs';
@@ -43,6 +44,22 @@ import {
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const pkgRoot = resolve(here, '..');
+
+/**
+ * Embedding config for the CLI: environment, then the deployment's profile, then
+ * the package default.
+ *
+ * The profile is what the *host* runs with, so a CLI that ignored it resolved a
+ * different embedding space than the index it was about to rewrite (measured
+ * 2026-11-01: profile `embeddinggemma-2`, package default `embed-gemma`). A
+ * `build` in that state re-embeds the whole corpus and then leaves a header the
+ * host's live index refuses; see lib/profile.mjs for the full account.
+ *
+ * @param {Record<string, any>} [overrides]
+ */
+function cliEmbedConfig(overrides = {}) {
+  return applyProfileDefaults(resolveConfig(overrides), { overrides });
+}
 
 function parseArgs(argv) {
   const args = { _: [] };
@@ -257,7 +274,7 @@ async function cmdBuild(args) {
     return;
   }
 
-  const cfg = resolveConfig();
+  const cfg = cliEmbedConfig();
   const health = await probe(cfg);
   if (!health.ok) {
     console.error(`embedding endpoint unavailable (${cfg.url}): ${health.error}`);
@@ -641,7 +658,7 @@ async function cmdRecall(args) {
   if (index.data.queryPrefix !== undefined && !process.env.DSH_G_MEMORY_EMBED_QUERY_PREFIX) {
     space.queryPrefix = index.data.queryPrefix;
   }
-  const cfg = resolveConfig(space);
+  const cfg = cliEmbedConfig(space);
   assertIndexSpace(index, cfg);
   warnQuerySpace(index, cfg, 'recall');
 
@@ -682,7 +699,7 @@ async function cmdRecall(args) {
 }
 
 async function cmdSelfcheck() {
-  const cfg = resolveConfig();
+  const cfg = cliEmbedConfig();
   console.log(`package      ${pkgRoot}`);
   console.log(`embed url    ${cfg.url}`);
   console.log(`embed model  ${cfg.model}`);
@@ -837,7 +854,7 @@ async function cmdDistill(args) {
   // Cards live in the index's space, so a distill run with the wrong prefixes would
   // write vectors the card gate can never match — silently, at the right width.
   const spaceProbe = await readIndex(defaultIndexDir()).catch(() => null);
-  if (spaceProbe) assertIndexSpace(spaceProbe, resolveConfig());
+  if (spaceProbe) assertIndexSpace(spaceProbe, cliEmbedConfig());
 
   const logs = await listSessions();
   const picked = logs.slice(0, limit);
@@ -889,7 +906,7 @@ async function cmdDistill(args) {
         + `(${payload?.usage?.completion_tokens ?? 0} tokens)`);
       continue;
     }
-    const [vec] = await embedBatch([card.summary], resolveConfig(), { purpose: 'doc' });
+    const [vec] = await embedBatch([card.summary], cliEmbedConfig(), { purpose: 'doc' });
     cards.push(withVector(card, vec));
     const u = payload.usage ?? {};
     console.log(`  ✓ ${log.slice(0, 16)}  ${text.length}→${card.summary.length} 字符  `

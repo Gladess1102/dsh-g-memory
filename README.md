@@ -480,13 +480,13 @@ All optional; defaults suit a single-machine setup.
 | `DSH_G_MEMORY_LLM_TIMEOUT_MS` | `60000` | Synthesis request timeout. |
 | `DSH_G_MEMORY_LLM_KEY_NAME` | `OPENCODE_GO_API_KEY` | Credential to look up for a non-loopback endpoint (env, else `$DSH_HOME/.credentials.yaml`). |
 | `DSH_G_MEMORY_LLM_HEADERS` | *(unset)* | Extra request headers as JSON. opencode-go answers `400 MissingSessionID` without `x-opencode-session`. |
-| `DSH_G_MEMORY_AUTO_STATS` | *(unset)* | Path to a JSONL decision log: one line per gate, injection, skip and failed recall. `scripts/telemetry-report.mjs` reads it. Unset means no telemetry. |
+| `DSH_G_MEMORY_AUTO_STATS` | `$DSH_HOME/dsh-g-memory/auto-recall-stats.jsonl` | Path to a JSONL decision log: one line per gate, injection, skip and failed recall. `scripts/telemetry-report.mjs` reads it. On by default — this variable moves the file, it does not switch telemetry on. The log is rotated to `<path>.1` once it passes 8 MB (one previous generation is kept), because one line per model step from every host grows without bound. |
 | `DSH_G_MEMORY_RERANK_KEY` | — | Bearer token for the reranker, if it needs one. |
 | `DSH_G_MEMORY_RERANK_PATH` | `/v1/rerank` | Reranker route, for servers that do not use the default. |
 | `DSH_G_MEMORY_RERANK_TIMEOUT_MS` | `30000` | Rerank request timeout. |
 | `DSH_G_MEMORY_CARDS` | `$DSH_HOME/dsh-g-memory/cards.ndjson` | Card store path. |
 | `DSH_G_MEMORY_INDEX_LAYER` | `on` | The one-line memory index in every system prompt. `off` removes the channel entirely (no section, no reads). |
-| `DSH_G_MEMORY_INDEX_LAYER_MAX_CHARS` / `_MAX_CARDS` / `_LINE_CHARS` | `1200` / `40` / `72` | Budget of the index block, number of entries, and how much of a summary one entry shows. |
+| `DSH_G_MEMORY_INDEX_LAYER_MAX_CHARS` / `_MAX_CARDS` / `_LINE_CHARS` | `1600` / `40` / `72` | Budget of the index block, number of entries, and how much of a summary one entry shows. |
 | `DSH_G_MEMORY_INDEX_LAYER_STALE_DAYS` | `90` | Zero-read cards older than this are hidden from the index. `0` disables the rule. |
 | `DSH_G_MEMORY_CARD_MIRROR` | `on` | `off` disables the human-readable `cards/MEMORY.md` mirror, for reading as well as writing. |
 

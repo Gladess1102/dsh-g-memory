@@ -331,5 +331,17 @@ await check('a distilled card records its model and the window it covers', () =>
   assert.equal(c.coveredTo, 222);
 });
 
+await check('a failed rename does not leave a temp file in the store directory', async () => {
+  // `atomicReplace` had no cleanup, so a rename that failed — a full disk, a target
+  // that turned into a directory — left `.tmp-<pid>-<n>` behind forever, one per
+  // write. `store.mjs`'s `writeAtomic` always unlinked; this one now matches it.
+  const target = join(dir, 'store-that-is-a-directory');
+  mkdirSync(target, { recursive: true });
+  const c = parseCard('这张卡片用来制造一次失败的原子替换，正文长度足够通过解析器的下限。', { session: 's-tmp' });
+  await assert.rejects(() => writeCards([withVector(c, vec(2))], target));
+  const leftovers = readdirSync(dir).filter((name) => name.includes('.tmp-'));
+  assert.deepEqual(leftovers, [], 'the temp file must be removed when the rename fails');
+});
+
 console.log(`\n${pass}/${pass + fail} checks passed`);
 process.exitCode = fail === 0 ? 0 : 1;

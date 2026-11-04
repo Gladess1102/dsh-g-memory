@@ -568,16 +568,23 @@ async function cmdBuild(args) {
   // The live worker writes the same files, so both take the same lock. Its pass is
   // bounded to a budget; wait for it rather than racing it.
   const lockPath = join(outDir, '.index.lock');
+  // `held` is the whole point: the `finally` below used to remove `lockPath`
+  // unconditionally, so a build that never got the lock deleted the *holder's*
+  // lock on its way out — and went on to write the index beside it.
+  let held = false;
   for (let waited = 0; ; waited += 1000) {
     try {
       const handle = await open(lockPath, 'wx');
       await handle.writeFile(String(process.pid));
       await handle.close();
+      held = true;
       break;
     } catch {
       if (waited >= 60_000) {
-        console.error('  ⚠️  另一个索引写入者持有锁（超过 60 秒），仍继续');
-        break;
+        // Waiting longer and then writing anyway is the race the lock exists to
+        // prevent, so this aborts instead. The message is thrown so the CLI's own
+        // handler reports it and exits non-zero.
+        throw new Error('另一个索引写入者持有锁超过 60 秒；本次未写入索引，也没有动它的锁');
       }
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
@@ -588,7 +595,7 @@ async function cmdBuild(args) {
   try {
     ({ rawBytes, zstdBytes } = await writeIndex(outDir, index));
   } finally {
-    await rm(lockPath, { force: true });
+    if (held) await rm(lockPath, { force: true });
   }
   await rm(checkpointPath, { force: true });
   console.log(`[write] ${outDir}`);

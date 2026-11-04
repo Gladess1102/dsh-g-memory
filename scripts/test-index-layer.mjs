@@ -84,6 +84,17 @@ await check('the block stays inside its budget', () => {
   for (const line of lines.slice(1, -1)) assert.match(line, /^- [0-9a-f]{6} /);
 });
 
+await check('a budget too small for even one line emits no block', () => {
+  // `maxChars` has a floor of 200 and `lineChars` a ceiling of 240, so the first
+  // line can exceed the whole budget. The `shown > 0` exemption let it in anyway
+  // and the block came out over its own cap; an over-budget block is worse than
+  // no block at all.
+  const long = card('aaaaaaaaaaaaaaa1', '一条很长的记忆摘要，'.repeat(20));
+  const out = renderIndexBlock([long], { maxChars: 200, lineChars: 240 });
+  assert.equal(out.text, '', 'nothing is emitted when not even one line fits');
+  assert.equal(out.shown, 0);
+});
+
 await check('the footer counts what is visible, not what was collected', () => {
   // The first version reserved the rendered footer and then counted the
   // candidates it had gathered, so a 13-line block announced "40 shown".

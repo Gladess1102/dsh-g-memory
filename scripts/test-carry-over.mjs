@@ -159,6 +159,26 @@ await check('an expired outcome is still a drop', async () => {
   assert.ok(await sawLateDrop('superseded-expired'));
 });
 
+await check('a recall that settles late does not overwrite the turn that replaced it', async () => {
+  const recall = makeRecall();
+  // The pipeline is asynchronous: run 1 is still retrieving when the person sends
+  // a second message, and that message's arming takes the slot. Run 1 then settles
+  // — and used to write its own outcome over the newer turn's slot, so the new
+  // turn was injected with an answer to the previous query.
+  recall.start('a', 'a query long enough to arm the pipeline');
+  recall.arm('a', 'THIS-TURN');
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(recall.take('a'), 'THIS-TURN', 'the newer turn keeps its memory');
+});
+
+await check('the run that owns the slot still settles it', async () => {
+  const recall = makeRecall();
+  recall.start('a', 'a query long enough to arm the pipeline');
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(recall.take('a'), '');
+  assert.equal(recall.lastTakeWhy, 'empty', 'its own settlement must land (there is no index here)');
+});
+
 await check('disposing forgets the parked payloads', async () => {
   const recall = makeRecall();
   recall.carried.set('a', { text: 'X', at: Date.now() });

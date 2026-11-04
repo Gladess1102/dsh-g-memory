@@ -12,6 +12,7 @@
  */
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -186,6 +187,29 @@ await check('the cache fingerprint changes when the embedding model does', async
   c.data.dim = 1024;
   assert.notEqual(indexFingerprint(a), indexFingerprint(c));
   assert.equal(indexFingerprint(a), indexFingerprint(fixture()), 'the same index must fingerprint the same');
+});
+
+await check('a failed compression removes the compressed copy it would hide behind', async () => {
+  // `readIndex` prefers the compressed copy. A transient zstd failure therefore used
+  // to leave the units written here in a plain file nobody reads, and the next live
+  // pass computed `byHash` from the stale compressed copy and re-embedded them.
+  const fresh = await mkdtemp(join(tmpdir(), 'gm-damage-plain-'));
+  const zstdPath = join(fresh, 'index.ndjson.zstd');
+  await writeIndex(fresh, fixture());
+  assert.ok(existsSync(zstdPath), 'the healthy write produced a compressed copy');
+
+  const before = process.env.DSH_G_MEMORY_ZSTD;
+  process.env.DSH_G_MEMORY_ZSTD = '/nonexistent/zstd-for-tests';
+  try {
+    await writeIndex(fresh, fixture());
+  } finally {
+    if (before === undefined) delete process.env.DSH_G_MEMORY_ZSTD;
+    else process.env.DSH_G_MEMORY_ZSTD = before;
+  }
+
+  assert.equal(existsSync(zstdPath), false, 'the stale compressed copy must not survive');
+  assert.equal((await readIndex(fresh)).size, 2, 'the plain copy is the readable one');
+  await rm(fresh, { recursive: true, force: true });
 });
 
 await rm(dir, { recursive: true, force: true });

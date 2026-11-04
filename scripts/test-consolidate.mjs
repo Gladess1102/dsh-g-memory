@@ -445,6 +445,25 @@ await check('the prompt forbids a prelude and demands a time point for state cla
   assert.match(CONSOLIDATION_SYSTEM, /Tag: /);
 });
 
+await check('no synthesis endpoint is a recorded skip, not a crash', async () => {
+  // `synthesis.baseUrl` defaults to '', so this is the shape of every run under a
+  // default composition. `summarise` returned `null` for it and the caller read
+  // `.ok` off that: a TypeError inside the card loop, with the failure surfacing
+  // as an unhandled rejection rather than as a receipt.
+  const before = (await readFile(receipts, 'utf8')).trim().split('\n').length;
+  const out = await consolidateSession(
+    { session: 's-no-endpoint', text: transcript('s-no-endpoint'), embed },
+    { baseUrl: '', model: 'stub' },
+    options,
+  );
+  assert.equal(out.stored, false);
+  assert.equal(out.retryable, true, 'an endpoint that is not configured may be configured later');
+  assert.equal(out.reason, 'no synthesis endpoint configured');
+  const lines = (await readFile(receipts, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(lines.length, before + 1, 'the attempt still leaves a receipt');
+  assert.equal(lines.at(-1).reason, 'no synthesis endpoint configured');
+});
+
 server.close();
 await rm(dir, { recursive: true, force: true });
 

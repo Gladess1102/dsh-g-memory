@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.14.3 — 2026-11-04
+
+**一轮逐条复审的 14 条缺陷修完：两条"静默关闭整条通道"的严重项、八条一般项、四条建议项。**
+
+两条严重项是同一类错误的两个面——配置与失败都被当成"值"静默丢弃：composition 只写块内一个字段时，schema 的缺省值把同块其余字段填成默认值、覆盖环境变量（`rerank: { model }` 就让重排静默关闭）；`summarise()` 在没配端点时 `return null`，而调用点解引用 `.ok`，默认配置下每次整合都是 TypeError。
+
+### Fixed — 严重
+
+- **`lib/consolidate.mjs`：默认配置下卡片循环静默死掉。** `summarise()` 没端点时 `return null`，其它失败返回 `{ ok: false }`；`consolidateSession` 直接 `if (!answer.ok)`，于是 `consolidate.enabled: true` + 未设 `synthesis.baseUrl`（默认空串）就是 TypeError。现在返回 `{ ok: false, text: null, reason: 'no synthesis endpoint configured' }`，调用点同时改成 `if (!answer?.ok)`——双保险，因为 `summarise` 是导出的。
+- **`lib/config.mjs`：composition 的缺省值覆盖环境变量。** `coerce()` 对未提供的键返回 `spec.fallback`，而本文件开头就写着"defaults live in each module"——真正的默认值是各模块 call-time 读到的环境变量。只写 `rerank: { model }` → `url: ''` → `DSH_G_MEMORY_RERANK_URL` 失效、重排静默关闭；`synthesis: { model }` → `enabled: false` + `baseUrl: ''` → 合成静默关闭；`embed: { model }` → `timeoutMs` 回 30 s；`policy: { gate: 3 }` → `marginGate` 1.18 变 0。现在 `coerce()` 对缺席的键返回 `undefined`、`validate()` 跳过这些键，四个消费方（rerank / synthesize / embed / policy）各自的默认值照旧生效。`lib/judge.mjs` 里那段"空即继承"的 `merged` 是同一问题的旧局部补丁，保留不动。
+
+### Fixed — 一般
+
+- **`lib/index.js`：`/recall` 里无保护解引用。** 同一处刚用 `invocation?.agent?.id ? … : {}` 承认它可选，四行后又 `String(invocation.agent.id)`；缺省时检索成功、rendered 已生成，却在 `arm()` 抛 TypeError，被外层 catch 报成 `{ kind: 'error' }`——成功的检索被报成失败。现在 arming 也要求 `invocation?.agent?.id`。
+- **`lib/auto-recall.mjs`：`#run` 覆盖新轮 pending。** `#run` 结束无条件 `pending.set(agentId, …)`，不校验槽位是否仍是它这一轮创建的。前一轮未完成时用户再发消息 → 第二轮新起 `#run` → 前一轮后完成覆盖新轮槽位 → 新轮注入到过期查询的记忆。`start()` 现在生成 token 写进槽位，`#run` 的九处结算统一走新的 `#park()`，写回前比对 `pending.get(agentId)?.token`。
+- **`lib/telemetry.mjs` + README：遥测默认开启且无轮转。** README 写"Unset means no telemetry"，而 `record()` 的 target 恒为默认路径；本机 `auto-recall-stats.jsonl` 已 3.7 MB / 29,382 行，每个模型 step 一条。改为按代码的事实写文档（默认开启，变量只移动路径），并加 8 MB 上限 + 轮转到 `<path>.1`（保留一代）。
+- **`lib/store.mjs`：压缩失败不删旧 zstd。** 压缩失败时只写明文、不删上一次的 `index.ndjson.zstd`，而 `readIndex` 优先读压缩副本——一次瞬时失败后，这次写入的 unit 只存在于无人读取的明文里，live-index 下轮从压缩副本算 `byHash`，会重复嵌入。现在写明文兜底时一并删掉压缩副本。
+- **`bin/dsh-g-memory.mjs`：抢锁超时后无锁继续写，并删别人的锁。** 等满 60 秒只打印警告就 break，`finally` 里无条件 `rm(lockPath)`。现在记 `held` 标志，只在真正持锁时删；超时改为抛错中止（CLI 顶层 catch 报错并退出非零），不写索引也不动别人的锁。
+- **`lib/config.mjs`：`cardPath` 是死配置。** schema 声明、文档提过，全仓无消费者，只有 `DSH_G_MEMORY_CARDS` 生效。按本文件对 `embed.batchSize` 的同一条理由（"一个什么都不做的旋钮比没有旋钮更糟"）删掉。
+- **README：`indexLayer.maxChars` 默认值写 1200，代码是 1600**（README 自己在 114 行也写 1600）。表格改为 `1600 / 40 / 72`。
+- **`lib/config.mjs` vs `lib/embedder.mjs`：同一个 `embed.timeoutMs` 两个默认值**（30 s / 120 s），走 composition 时 30 s 生效——本机 profile 注释记录过这个坑（10-19 一天 6 次超时）。两处统一为 120 s。
+
+### Fixed — 建议
+
+- **`lib/live-index.mjs`：陈旧锁抢占 TOCTOU。** A、B 同时 stat 到过期锁，都 unlink、都 `open('wx')` 成功，随后 A 的清理删掉 B 的活锁。改用 `rename` 抢占——两个进程里只有一个 rename 能成功，被抢走的副本只属于自己。
+- **`lib/cards.mjs`：`atomicReplace` 无 try/catch。** rename 失败时 `.tmp-<pid>-<n>` 永久留在 store 目录（`store.mjs` 的 `writeAtomic` 有清理，这里没有）。现在与它对齐。
+- **`lib/index-layer.mjs`：首行无条件加入。** 预算循环的 `shown > 0` 让第一行无条件通过；`maxChars` 下限 200、`lineChars` 上限 240 时渲染结果超预算。现在 `shown === 0` 时也守预算——一行都放不下就整块不出现。
+- **`lib/live-index.mjs` 两处口径。** 每 tick 上限拿"日志条数"比"unit 上限"，改用已取 unit 计数（`fresh.length`）；`record('live-index')` 的条件漏了 `resourced`，只做 provenance 回填的那轮写了索引却没有遥测行。
+
+### 验证
+
+- 新增 `scripts/test-telemetry.mjs`（2 项：轮转保留上一代、ambient 字段），已并入 `npm test` 链。
+- `test-config-env` +3 项：composition 块不被 schema 默认值填充；**四个消费方**（rerank / synthesize / embed / policy）在 composition 只写部分字段时仍继承环境变量；`embed.timeoutMs` 只有一个数。
+- `test-consolidate` +1：无合成端点是"记录下来的 skip"，不是崩溃。`test-carry-over` +2：迟到的 `#run` 不覆盖替换它的那一轮，自己那一轮仍能结算（关掉 token 校验时第一项实测会失败）。
+- `test-index-layer` +1（预算放不下一行时不出现块）、`test-store-damage` +1（压缩失败删掉旧 zstd）、`test-cards` +1（rename 失败不留临时文件）。
+- 全量 `npm test`（28 个脚本）通过。
+
 ## 0.14.2 — 2026-11-04
 
 **运维取证报告公开化：五份压缩为摘要，一份因内容本身即隐私而不公开。**

@@ -15,7 +15,7 @@
   "author": "Gladess1102",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Gladess1102/dsh-g-memory.git"
+    "url": "git+https://github.com/Gladess1102/dsh-g-memory.git"
   },
   "homepage": "https://github.com/Gladess1102/dsh-g-memory#readme",
   "bugs": {

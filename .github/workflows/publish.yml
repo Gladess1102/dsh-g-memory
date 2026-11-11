@@ -1,0 +1,56 @@
+name: publish
+
+# Trusted publishing via OIDC: no long-lived npm token in the repository.
+#
+# npm announced in July 2026 that 2FA-bypass granular access tokens lose the
+# ability to publish directly (expected around January 2027) and pointed at
+# trusted publishing as the replacement. With OIDC the workflow presents a
+# short-lived identity for this exact repo + workflow, and npm decides from its
+# own package settings, so there is nothing to rotate and nothing to leak.
+#
+# One-time setup on npmjs.com, after the first manual publish exists:
+#   Package -> Settings -> Trusted publishing -> GitHub Actions
+#     organization/user: Gladess1102
+#     repository:        dsh-g-memory
+#     workflow:          publish.yml
+#     environment:       (leave empty)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      # Trusted publishing needs npm 11.5.1 or newer; the CLI bundled with the
+      # runner's Node is not guaranteed to be that recent.
+      - name: npm with trusted publishing support
+        run: npm install -g npm@latest
+
+      # A tag that disagrees with package.json is the one mistake this workflow
+      # can make silently, and npm never lets the version be reused.
+      - name: release tag matches package version
+        if: github.event_name == 'release'
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "v$version" != "$tag" ]; then
+            echo "tag $tag does not match package.json v$version" >&2
+            exit 1
+          fi
+
+      - name: publish
+        run: npm publish --provenance --access public

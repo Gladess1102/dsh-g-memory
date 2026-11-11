@@ -12,6 +12,7 @@
 - **`memory_recall` 的 `tags` 参数**：transcript unit 没有 tags，所以给 tags 就是只搜卡片层。过滤发生在向量搜索之前而不是之后——先取 top-N 再过滤会丢掉窗口里的大部分，可能出现"匹配的卡就在窗口外"却返回空。
 - **`scripts/recall-query-report.mjs`**：按 query 形态分组统计闸门通过率（`latin+digit` / `pronoun+short` / `plain-zh` …），让"该怎么问"由数据说话而不是写死。
 - **`scripts/test-read-tool.mjs`**：11 项检查，覆盖分组、前缀匹配、锚点吸附、预算截断、卡片全文、schema 契约。
+- **`stats --export`**（`lib/stats-export.mjs` + `scripts/test-stats-export.mjs`）：把本地决策日志汇总成一段可直接贴进 issue 的表格——事件数、闸门通过率、注入次数与平均长度、错误数、会话数。写成**白名单**而不是脱敏器：只取事件名和枚举字段，query、路径、session id、自由文本理由从不进入输出。测试拿一份塞满假密钥的日志跑，断言一个都不出现。
 
 ### Changed
 

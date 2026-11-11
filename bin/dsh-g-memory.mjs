@@ -38,6 +38,8 @@ import { findSchemaValidator } from '../lib/harness.mjs';
 import { parseCard, readCards, writeCards, withVector, formatCard, tagIndex, defaultCardPath } from '../lib/cards.mjs';
 import { chatHeaders, defaultSynthesisConfig, noThinkingFields, redact } from '../lib/synthesize.mjs';
 import { CONSOLIDATION_SYSTEM, tailWindow } from '../lib/consolidate.mjs';
+import { defaultStatsPath } from '../lib/telemetry.mjs';
+import { parseStatsLines, summarizeStats, renderStatsReport } from '../lib/stats-export.mjs';
 import {
   INDEX_VERSION, MemoryIndex, defaultIndexDir, readIndex, writeIndex, prepareQueryVector,
 } from '../lib/store.mjs';
@@ -103,6 +105,11 @@ function parseArgs(argv) {
     // another agent shells out to this command, so stdout must be one JSON object
     // and nothing else.
     else if (token === '--json') args.json = true;
+    // `stats --export` prints an aggregate summary meant to be pasted into an
+    // issue or a discussion. The log itself holds query text and paths, so the
+    // export is built from counts only — see lib/stats-export.mjs.
+    else if (token === '--export') args.export = true;
+    else if (token === '--file') args.file = value('--file');
     // `distill` documented these three and read them, but nothing parsed them, so
     // the error message told the operator to pass a `--url` that could not work.
     else if (token === '--recent') args.recent = count('--recent');
@@ -125,6 +132,9 @@ function usage() {
                --limit N   index at most N session logs
                --fresh     ignore the previous index and checkpoint; re-embed everything
   stats        Show index composition and on-disk size
+               --export    Print an aggregate usage summary (counts only; no query
+                           text, session ids or paths) to paste into an issue
+               --file PATH read that decision log instead of the default one
   recall       Query the index:  recall "your question" [--top 5] [--out DIR] [--json]
   selfcheck    Verify the embedding endpoint and report its dimension
   plugincheck  Load the Host half through a strict fake registry, without
@@ -605,6 +615,30 @@ async function cmdBuild(args) {
 }
 
 async function cmdStats(args) {
+  // Aggregates only, from the decision log rather than the index: this is the
+  // number a user can safely paste in public, and the one that answers "is the
+  // plugin actually doing anything on my machine".
+  if (args.export) {
+    const target = args.file ? resolve(args.file) : defaultStatsPath();
+    let live = '';
+    try {
+      live = await readFile(target, 'utf8');
+    } catch {
+      console.error('no decision log at ' + target
+        + '\nThe plugin writes one after its first turn; pass --file to point at another.');
+      process.exitCode = 1;
+      return;
+    }
+    // The log rotates to <path>.1, and a window that spans a rotation is the
+    // common case for anyone who has used the plugin for a while.
+    let rotated = '';
+    try { rotated = await readFile(target + '.1', 'utf8'); } catch { /* no rotation yet */ }
+    const events = parseStatsLines(rotated + '\n' + live);
+    const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+    console.log(renderStatsReport(summarizeStats(events), { version: pkg.version }));
+    return;
+  }
+
   const dir = args.out ? resolve(args.out) : defaultIndexDir();
   const index = await readIndex(dir);
   const byRole = { user: 0, assistant: 0, tool: 0, action: 0 };

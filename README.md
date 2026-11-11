@@ -568,6 +568,7 @@ node bin/dsh-g-memory.mjs build            # build the index from session logs
 node bin/dsh-g-memory.mjs build --no-tool  # conversation only (smaller index)
 node bin/dsh-g-memory.mjs build --no-tool-calls   # skip what write/edit wrote
 node bin/dsh-g-memory.mjs stats            # composition and on-disk size
+node bin/dsh-g-memory.mjs stats --export   # aggregate usage summary, safe to paste publicly
 node bin/dsh-g-memory.mjs recall "when did we fix the title server?"
 node scripts/workspace-key.mjs               # which session directory this workspace maps to
 ```
@@ -607,6 +608,28 @@ node bin/dsh-g-memory.mjs plugincheck
 ```
 
 `DSH_CHECKOUT` overrides the checkout path it looks for the validator in.
+
+### What leaves the machine: nothing
+
+The plugin has no telemetry and no update check. Everything it writes stays in
+`$DSH_HOME/dsh-g-memory/` — the index, the cards, and a decision log
+(`auto-recall-stats.jsonl`, rotated at 8 MB) that records one line per gate
+decision so a failed recall can be diagnosed without replaying transcripts.
+
+That log is *not* anonymous: it holds the capped query text, session ids and the
+working directory. It is a local file at mode 0600, and it is never sent
+anywhere.
+
+When a report needs numbers, `stats --export` reads that log and prints an
+aggregate table — event counts, gate pass rate, injection count and size, error
+count, distinct sessions. It is built as a whitelist: query text, paths, session
+ids and free-text reasons are never copied into the output, and
+`scripts/test-stats-export.mjs` feeds it a log full of fake secrets and asserts
+none of them appear. Copy the table into an issue yourself; nothing is uploaded.
+
+```bash
+node bin/dsh-g-memory.mjs stats --export --file /path/to/auto-recall-stats.jsonl
+```
 
 Environment:
 

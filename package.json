@@ -50,7 +50,7 @@
     "recall": "node bin/dsh-g-memory.mjs recall",
     "selfcheck": "node bin/dsh-g-memory.mjs selfcheck",
     "plugincheck": "node bin/dsh-g-memory.mjs plugincheck",
-    "test": "node scripts/test-modules-load.mjs && node scripts/test-cli-args.mjs && node scripts/test-config-env.mjs && node scripts/test-embed-prefix.mjs && node scripts/test-policy.mjs && node scripts/test-quality.mjs && node scripts/test-inject.mjs && node scripts/test-judge.mjs && node scripts/test-judge-gate.mjs && node scripts/test-carry-over.mjs && node scripts/test-resident.mjs && node scripts/test-redaction.mjs && node scripts/test-exact.mjs && node scripts/test-timeline.mjs && node scripts/test-vcp-arms.mjs && node scripts/test-cards.mjs && node scripts/test-store-damage.mjs && node scripts/test-live-index.mjs && node scripts/test-governance.mjs && node scripts/test-consolidate.mjs && node scripts/test-plugin.mjs && node scripts/test-loader-contract.mjs && node scripts/test-incremental-build.mjs && node scripts/test-e2e-hermetic.mjs && node scripts/test-profile.mjs && node scripts/test-index-layer.mjs && node scripts/test-card-reads.mjs && node scripts/test-telemetry.mjs",
+    "test": "node scripts/test-modules-load.mjs && node scripts/test-cli-args.mjs && node scripts/test-config-env.mjs && node scripts/test-embed-prefix.mjs && node scripts/test-policy.mjs && node scripts/test-quality.mjs && node scripts/test-inject.mjs && node scripts/test-judge.mjs && node scripts/test-judge-gate.mjs && node scripts/test-carry-over.mjs && node scripts/test-resident.mjs && node scripts/test-redaction.mjs && node scripts/test-exact.mjs && node scripts/test-timeline.mjs && node scripts/test-vcp-arms.mjs && node scripts/test-cards.mjs && node scripts/test-store-damage.mjs && node scripts/test-live-index.mjs && node scripts/test-governance.mjs && node scripts/test-consolidate.mjs && node scripts/test-plugin.mjs && node scripts/test-loader-contract.mjs && node scripts/test-incremental-build.mjs && node scripts/test-e2e-hermetic.mjs && node scripts/test-profile.mjs && node scripts/test-index-layer.mjs && node scripts/test-card-reads.mjs && node scripts/test-telemetry.mjs && node scripts/test-stats-export.mjs",
     "test:unit": "node scripts/test-policy.mjs && node scripts/test-quality.mjs && node scripts/test-inject.mjs && node scripts/test-redaction.mjs && node scripts/test-exact.mjs && node scripts/test-timeline.mjs && node scripts/test-vcp-arms.mjs && node scripts/test-cards.mjs && node scripts/test-store-damage.mjs",
     "test:prefix": "node scripts/test-embed-prefix.mjs",
     "test:loader": "node scripts/test-loader-contract.mjs",
@@ -80,7 +80,8 @@
     "test:live": "node scripts/test-live-index.mjs",
     "test:governance": "node scripts/test-governance.mjs",
     "eval:challenge": "node scripts/eval-retrieval.mjs --cases scripts/cases.challenge.json --min-rate 0",
-    "test:config": "node scripts/test-config-env.mjs"
+    "test:config": "node scripts/test-config-env.mjs",
+    "test:stats-export": "node scripts/test-stats-export.mjs"
   },
   "bin": {
     "dsh-g-memory": "bin/dsh-g-memory.mjs"

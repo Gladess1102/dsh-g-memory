@@ -1,0 +1,147 @@
+[
+  {
+    "query": "我那只叫 Zorvath 的鬃狮蜥是什么时候买的？",
+    "mustNot": [
+      "zorvath",
+      "鬃狮蜥"
+    ],
+    "why": "虚构宠物"
+  },
+  {
+    "query": "我 2024 年在 Qelthara 市考的潜水证是哪个教练带的？",
+    "mustNot": [
+      "qelthara",
+      "潜水证"
+    ],
+    "why": "虚构城市+证件"
+  },
+  {
+    "query": "Bramblewick 那台老式胶片相机的快门寿命是多少次？",
+    "mustNot": [
+      "bramblewick",
+      "胶片相机"
+    ],
+    "why": "虚构型号"
+  },
+  {
+    "query": "我订的 Veltrix 牌咖啡机第四档水温设成多少了？",
+    "mustNot": [
+      "veltrix",
+      "咖啡机"
+    ],
+    "why": "虚构品牌"
+  },
+  {
+    "query": "Skarnhold 那个登山包的背负系统是什么型号？",
+    "mustNot": [
+      "skarnhold",
+      "登山包"
+    ],
+    "why": "虚构品牌"
+  },
+  {
+    "query": "我女儿在 Quillmark 小学的班主任叫什么？",
+    "mustNot": [
+      "quillmark",
+      "班主任"
+    ],
+    "why": "虚构学校"
+  },
+  {
+    "query": "Threnody 乐队的第三张专辑叫什么名字？",
+    "mustNot": [
+      "threnody"
+    ],
+    "why": "虚构乐队"
+  },
+  {
+    "query": "Morbius 计划第二阶段预算超支了多少？",
+    "mustNot": [
+      "morbius"
+    ],
+    "why": "虚构项目"
+  },
+  {
+    "query": "我上次在 Ferrowgate 诊所打的疫苗是哪个批号？",
+    "mustNot": [
+      "ferrowgate",
+      "批号"
+    ],
+    "why": "虚构诊所"
+  },
+  {
+    "query": "Nibbler 第 7 版的默认超时是多少秒？",
+    "mustNot": [
+      "nibbler"
+    ],
+    "why": "虚构软件"
+  },
+  {
+    "query": "我报名的 Duskwhistle 马拉松第几公里有补给站？",
+    "mustNot": [
+      "duskwhistle",
+      "马拉松"
+    ],
+    "why": "虚构赛事"
+  },
+  {
+    "query": "Arkmeadow 那本园艺手册的第 12 章讲什么？",
+    "mustNot": [
+      "arkmeadow",
+      "园艺"
+    ],
+    "why": "虚构书名"
+  },
+  {
+    "query": "Grimsby-Low 车厢的第几个座位靠窗？",
+    "mustNot": [
+      "grimsby"
+    ],
+    "why": "虚构列车"
+  },
+  {
+    "query": "我买的 Hearthvale 牌空气炸锅炸篮容量多大？",
+    "mustNot": [
+      "hearthvale",
+      "空气炸锅"
+    ],
+    "why": "虚构品牌"
+  },
+  {
+    "query": "Oakhurst Nine 这台服务器的网卡型号是什么？",
+    "mustNot": [
+      "oakhurst"
+    ],
+    "why": "虚构设备"
+  },
+  {
+    "query": "我那副 Larkspur 牌泳镜的度数是多少？",
+    "mustNot": [
+      "larkspur",
+      "泳镜"
+    ],
+    "why": "虚构品牌"
+  },
+  {
+    "query": "Sundermere 项目验收时用的那支探针叫什么名字？",
+    "mustNot": [
+      "sundermere"
+    ],
+    "why": "虚构项目"
+  },
+  {
+    "query": "我家的 Thornbury 牌门锁电池多久换一次？",
+    "mustNot": [
+      "thornbury",
+      "门锁"
+    ],
+    "why": "虚构品牌"
+  },
+  {
+    "query": "Velmora 那场讲座的主讲人研究什么方向？",
+    "mustNot": [
+      "velmora"
+    ],
+    "why": "虚构讲座"
+  }
+]

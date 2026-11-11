@@ -777,14 +777,23 @@ async function cmdPluginCheck() {
   // `auto: false` keeps this a pure definition check: no listeners, no network.
   mod.apply(ctx, { auto: false });
 
-  const tool = registered.find((t) => t.name === 'memory_recall');
-  if (tool === undefined) {
-    console.error('result       FAIL — apply() finished but registered no memory_recall');
+  // Every registered tool is checked, not just the first: the schema assertions
+  // above run inside register(), so a tool that never registered is a tool whose
+  // schema was never validated — and "the model can call it and nothing reviewed
+  // it" is exactly the failure this command exists to prevent.
+  const expected = ['memory_forget', 'memory_note', 'memory_read', 'memory_recall'];
+  const names = registered.map((t) => t.name).sort();
+  const missing = expected.filter((name) => !names.includes(name));
+  if (registered.length === 0 || missing.length > 0) {
+    console.error('result       FAIL — registered: ' + (names.join(', ') || 'none')
+      + (missing.length > 0 ? ` (missing: ${missing.join(', ')})` : ''));
     process.exitCode = 1;
     return;
   }
   console.log(`plugin       ${mod.name ?? '(unnamed)'}`);
-  console.log(`tool         ${tool.name} (timeout ${tool.timeoutMs}ms)`);
+  for (const registeredTool of registered) {
+    console.log(`tool         ${registeredTool.name} (timeout ${registeredTool.timeoutMs}ms)`);
+  }
   if (harness === null) {
     console.log('result       PARTIAL — tool shape is valid; schema subset unverified');
     process.exitCode = 1;

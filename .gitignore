@@ -30,3 +30,6 @@ cases.local.json
 
 # Unredacted forensic reports: they carry this machine's paths and session ids.
 reports/.originals/
+
+# Card archive listing: summaries quote real session text.
+reports/cards-archive-*.md

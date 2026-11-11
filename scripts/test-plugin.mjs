@@ -294,17 +294,20 @@ async function main() {
       assert.equal(plugin.name, 'dsh-g-memory');
     });
 
-    await check('registers exactly the recall, note and forget tools', () => {
-      // Three tools: `memory_recall` reads, `memory_note` writes, `memory_forget`
-      // withdraws. The write path exists because a judgement formed mid-session had
-      // no route to a later session; the forget path exists because a memory system
-      // that can only add becomes more wrong the more it remembers — a corrected
-      // fact sat beside its correction with equal confidence.
+    await check('registers exactly the recall, read, note and forget tools', () => {
+      // Four tools: `memory_recall` searches, `memory_read` opens what the search
+      // found, `memory_note` writes, `memory_forget` withdraws. The write path
+      // exists because a judgement formed mid-session had no route to a later
+      // session; the forget path exists because a memory system that can only add
+      // becomes more wrong the more it remembers — a corrected fact sat beside its
+      // correction with equal confidence. The read path exists because a recall
+      // preview is capped at a few hundred characters, so before it the only way
+      // to read the rest was to open the session log by hand.
       //
       // Asserted as an exact set on purpose: a tool that appears without a decision
       // here is a surface the model can call and nothing has reviewed.
-      assert.equal(state.tools.length, 3);
-      assert.deepEqual(state.tools.map((t) => t.name).sort(), ['memory_forget', 'memory_note', 'memory_recall']);
+      assert.equal(state.tools.length, 4);
+      assert.deepEqual(state.tools.map((t) => t.name).sort(), ['memory_forget', 'memory_note', 'memory_read', 'memory_recall']);
     });
 
     const forgetTool = state.tools.find((t) => t.name === 'memory_forget');

@@ -354,6 +354,7 @@ Memory is reachable three ways, and they are independent:
 | How | Who starts it | Reaches the model? |
 |---|---|---|
 | `memory_recall` tool | the model decides | yes, as the tool result |
+| `memory_read` tool | the model decides | yes, as the tool result |
 | Automatic recall | the plugin, on each user message | yes, as framed context |
 | **`/recall <query>`** | **you** | **yes — shown to you and injected on the next step** |
 
@@ -374,14 +375,57 @@ request is not speculation), but it does respect the `DSH_G_MEMORY_ENABLED` kill
 switch. And it is registered only when the profile has the commands service; a
 profile without it still gets the tool and automatic recall.
 
+### Reading past the preview
+
+A recall result is capped: `previewChars` (400 by default) of each entry, plus the
+session and sequence it came from. That is enough to decide *this is the
+conversation*, not enough to answer from it — and before `memory_read` the only
+way to read the rest was to open the zstd-framed session log by hand.
+
+```
+memory_recall("seedvr2 超分 512 1024 内存")
+  → { found: 2, memories: [{ preview: "…", session: "session-184a3f64-…", seq: 2039, score: 7.45 }] }
+
+memory_read(session="session-184a3f64-…", seq=2039, before=1, after=1)
+  → the three entries around it, full text, with the untrusted notice
+```
+
+The split is the same one claude-mem drives with a search → timeline → details
+skill: the cheap call finds the place, the second call reads it, and detail is
+paid for only when it is needed.
+
+Two things it can address:
+
+| Argument | Reads |
+|---|---|
+| `session` (+ optional `seq`, `before`, `after`) | a transcript window from the index |
+| `card` | one durable card in full — the layer a preview truncates and whose "session" is only its origin note |
+
+A `seq` that no longer exists snaps to the nearest entry rather than failing: an
+exact unit can be merged or dropped by a reindex, and refusing over one missing
+integer would make the tool useless after any rebuild.
+
+### Filtering by tag
+
+`memory_recall` takes `tags`:
+
+```
+memory_recall("架构 检索", tags=["dsh-g-memory"])
+```
+
+Transcript units carry no tags, so giving tags searches **the durable card layer
+alone** — that is the point of the filter, not a limitation to work around. It is
+the same idea as Letta's tagged archival memory: when the topic is known but the
+wording is not, tags are a better key than a similarity score.
+
 ### Seeing the tools in a PTC profile
 
 DSH 0.2 has two tool modes, and in the Program-Tool-Call one the request's `tools`
 array contains **only `run_code`**. That is the design, not a broken mount: under
 `mode: 'ptc'` the native tool schemas are omitted from the request by the host
-itself, and `memory_recall` / `memory_note` / `memory_forget` are handed to the
-model as SDK bindings inside a `run_code` program instead. Verified here against
-both modes — a native-profile session carries all three in the `tools` array, and
+itself, and `memory_recall` / `memory_read` / `memory_note` / `memory_forget` are
+handed to the model as SDK bindings inside a `run_code` program instead. Verified
+here against both modes — a native-profile session carries all four in the `tools` array, and
 PTC sessions call them through `run_code` dispatch (8 successes, 0 errors).
 
 So a missing name in a PTC session's `tools` array is **not** evidence that the

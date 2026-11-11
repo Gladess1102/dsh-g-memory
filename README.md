@@ -2,6 +2,8 @@
 
 Cross-session **semantic memory** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 
+**Found a bug or want a feature → [Issues](https://github.com/Gladess1102/dsh-g-memory/issues).** Include the DSH version, the plugin version, and `stats --export` output if the problem is retrieval — it carries the counts without your text.
+
 DSH already ships an FTS5 full-text index over session history. That finds sessions
 whose *titles* or exact tokens match. It cannot answer "what did we decide about the
 retry policy three weeks ago". This plugin adds the missing layer: a local,

@@ -236,6 +236,19 @@ cd ~/.dsh/profiles/web
 node node_modules/dsh-g-memory/bin/dsh-g-memory.mjs build
 ```
 
+Where the artefacts live, in order of preference:
+
+- **Plugin Manager** (`install_bundle`) — the supported path on DSH 0.1.6+.
+- **Release zip** — every tag has a source archive attached, so the download counter
+  on the release page is the one usage signal this project has that is not a clone
+  count.
+- **npm** — the package name is `dsh-g-memory`. The first publish is waiting out
+  npm's new-account review window; until it lands, the two routes above work and
+  `npm install -g dsh-g-memory` will return 404.
+
+Publishing mechanics (2FA, trusted publishing, what to do if the account is
+suspended): [docs/PUBLISHING.md](docs/PUBLISHING.md).
+
 Installing a **new** bundle activates through HMR, so no restart is needed.
 Replacing an already-installed package does need one, to load a fresh module
 generation.

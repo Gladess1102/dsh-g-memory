@@ -170,6 +170,16 @@
       },
       "versions": [
         {
+          "version": "0.15.1",
+          "publishTimestamp": 1794932222,
+          "source": {
+            "type": "npm"
+          },
+          "engines": {
+            "node": ">=20"
+          }
+        },
+        {
           "version": "0.15.0",
           "publishTimestamp": 1794929614,
           "source": {

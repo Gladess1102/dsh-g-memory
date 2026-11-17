@@ -30,20 +30,30 @@ the job requests an OIDC token, npm verifies the repository, workflow file and
 branch from the package's own settings, and the publish is recorded with
 provenance.
 
-One-time setup, after the package exists:
+One-time setup, after the package exists. **There is no Trusted publishing form
+in the package settings page** — the package page only carries access controls
+(“Publishing access”, maintainers). The binding is created from the CLI:
 
-1. npmjs.com → Packages → `dsh-g-memory` → Settings → **Trusted publishing**
-2. Add a GitHub Actions publisher:
+```sh
+npm trust github dsh-g-memory \
+  --file publish.yml \
+  --repo Gladess1102/dsh-g-memory \
+  --allow-publish
+```
 
-   | field | value |
-   |---|---|
-   | organization/user | `Gladess1102` |
-   | repository | `dsh-g-memory` |
-   | workflow | `publish.yml` |
-   | environment | *(empty)* |
+That one command needs a browser 2FA tap, prints back the package, the workflow
+file and the repository it resolved, and records `permissions: publish, stage
+publish`. `npm trust list dsh-g-memory` shows it again (that read also asks for
+2FA), and `npm trust revoke dsh-g-memory --id=<trust-id>` removes it.
 
-3. Cut a GitHub Release whose tag matches `package.json` (`v0.15.1` ↔ `0.15.1`).
-   The workflow fails on a mismatch instead of burning a version number.
+Once the binding exists, the only step per release is:
+
+- Cut a GitHub Release whose tag matches `package.json` (`v0.15.1` ↔ `0.15.1`).
+  The workflow fails on a mismatch instead of burning a version number.
+
+Optionally tighten “Publishing access” to *Require two-factor authentication and
+disallow bypass 2fa tokens* — trusted publishers keep working at that setting,
+and the long-lived bypass tokens stop being able to write at all.
 
 ## Verify a publish
 
@@ -81,3 +91,5 @@ After it lifts, in this order:
 | 2026-11-11 | `npm publish` with `--otp=<recovery code>` → 72 h suspension |
 | 2026-11-14 16:39 UTC | suspension ends |
 | 2026-11-17 | first publish of `0.15.0` from the CLI; the account came back in `auth-only` mode, so no one-time code was asked for |
+| 2026-11-17 | `0.15.1` published by CI through `npm trust github`; the run took 21 s and recorded a signed provenance statement |
+| 2026-11-17 | `0.0.0-stage` placeholder left by staged publishing removed with `npm unpublish` |

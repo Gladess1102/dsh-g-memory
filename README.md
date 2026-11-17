@@ -242,9 +242,8 @@ Where the artefacts live, in order of preference:
 - **Release zip** — every tag has a source archive attached, so the download counter
   on the release page is the one usage signal this project has that is not a clone
   count.
-- **npm** — the package name is `dsh-g-memory`. The first publish is waiting out
-  npm's new-account review window; until it lands, the two routes above work and
-  `npm install -g dsh-g-memory` will return 404.
+- **npm** — the package name is `dsh-g-memory`; `npm install -g dsh-g-memory`
+  works, as does `npm install dsh-g-memory` per project.
 
 Publishing mechanics (2FA, trusted publishing, what to do if the account is
 suspended): [docs/PUBLISHING.md](docs/PUBLISHING.md).

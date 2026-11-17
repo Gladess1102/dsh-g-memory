@@ -80,3 +80,4 @@ After it lifts, in this order:
 | 2026-11-11 | account created, 2FA (security key) enabled the same hour |
 | 2026-11-11 | `npm publish` with `--otp=<recovery code>` → 72 h suspension |
 | 2026-11-14 16:39 UTC | suspension ends |
+| 2026-11-17 | first publish of `0.15.0` from the CLI; the account came back in `auth-only` mode, so no one-time code was asked for |

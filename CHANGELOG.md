@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.15.1 — 2026-11-17
+
+**插件市场索引入库；包首次上架 npm（0.15.0 已发布，`npm install -g dsh-g-memory` 可用）。**
+
+### Added
+
+- **`scripts/gen-market-index.mjs`**（+ `market/`）：按宿主 `@deepseek-ai/dsh-plugin-market` 的 format-1 契约生成本仓库的插件市场索引——header（`format`/标题/描述/分类）加一条 plugin entry，每个 `versions[]` 的 `source` 要么是 `npm`，要么是钉死 commit 的 `git`。因此索引可以在包上线 npm 之前先发出去，不至于卡在"先有鸡还是先有蛋"。`--check` 只校验不落盘，是提交前的闸门。`market/` 里同时放了市场 PR 需要的条目与文案。
+- **`docs/MARKET.md`**：怎么重新生成、两种 source 的区别，以及为什么占位版本必须过滤掉。
+
+### Changed
+
+- **生成器跳过 `0.0.0-stage`**：npm 的 staged publishing 会先给包名占一个 334 字节的空壳版本，真版本随后才落库。索引里出现它，用户按索引安装就会装到一个空包。0.15.0 发布当天正好踩到这个：过滤前 `--source npm` 生成出 2 条版本行，过滤后只剩 1 条。
+- **`engines` 取真实值**：原来两条分支都硬编码成 `{}`，现在 npm 分支读 registry 里每个版本的 manifest，git 分支读本仓库 `package.json`。
+
 ## 0.15.0 — 2026-11-08
 
 **读全量记忆：`memory_read` 工具 + `memory_recall` 的 `tags` 过滤；召回词开始进决策日志。**

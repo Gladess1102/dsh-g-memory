@@ -77,11 +77,15 @@ Trying again does not help and may extend the window.
 
 After it lifts, in this order:
 
-1. Regenerate recovery codes (npmjs.com → Account → Manage Recovery Codes), since
-   any code used or exposed during the window should be considered burned.
+1. Regenerate recovery codes. They are **not** on the Account overview — that page
+   only says "1 security key". They sit behind the 2FA settings screen:
+   npmjs.com → Account → **Modify 2FA**. Any code used or exposed during the
+   window should be considered burned.
 2. `npm publish` with the browser 2FA prompt, or a GitHub Release once trusted
    publishing is bound.
-3. Confirm `Require two-factor authentication for write actions` is back on.
+3. Confirm 2FA covers writes again: a suspension can leave the account in
+   *auth-only* mode, where the overview reads "Enabled for authorization only".
+   Tighten it from the same **Modify 2FA** screen.
 
 ## History
 

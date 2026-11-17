@@ -21,7 +21,13 @@ Adds `data/plugins/Gladess1102__dsh-g-memory.yml`.
 - real, working code: host plugin, CLI, index builder, and a test suite in the repo
 - installs with the command below today
 
-Not on npm yet: the first publish needs a manual 2FA step and is still pending. GitHub install is what works right now, so the entry is submitted as a GitHub install; the npm version can be filled in afterwards without another PR.
+**Status.** Merged 2026-11-14 as awesome-dsh-plugin PR #15216; the entry now
+lives at `data/plugins/Gladess1102__dsh-g-memory.yml` and renders at
+<https://awesome-dsh-plugin.com/p/Gladess1102/dsh-g-memory/>. The entry was
+submitted as a GitHub install because npm was still blocked at the time; the
+package reached npm on 2026-11-17 (`0.15.0` from the CLI, `0.15.1` through
+trusted publishing), so `dsh plugin --profile <p> add dsh-g-memory` works as
+well and the entry can move to the npm form without another PR.
 
 **Install**
 

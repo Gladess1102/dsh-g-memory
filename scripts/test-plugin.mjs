@@ -829,7 +829,7 @@ async function main() {
     await check('every option the automatic path reads is actually passed to it', () => {
       const wired = plugin.autoRecallOptions(
         {
-          embed: { url: 'http://embed' }, rerank: { url: 'http://rerank' },
+          embed: { url: 'http://127.0.0.1:11439' }, rerank: { url: 'http://127.0.0.1:11436' },
           policy: { marginGate: 1.18 }, synthesis: { enabled: true },
           consolidate: { enabled: true }, autoConfig: { candidates: 5 }, apiKey: 'k',
           judge: { provider: 'rules' }, resident: { enabled: true },

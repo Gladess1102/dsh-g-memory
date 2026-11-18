@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+- **`market/`、`docs/MARKET.md`、`scripts/gen-market-index.mjs`**：这套自建市场索引的生成器与提交材料，是准备 awesome-dsh-plugin 收录 PR 时加的。PR #15216 已合入、条目已随目录发布，包也上了 npm，留一份别人的目录结构在仓库里没有意义；收录以 awesome-dsh-plugin 里的条目为准。
+
 ## 0.15.1 — 2026-11-17
 
 **插件市场索引入库；包首次上架 npm（0.15.0 已发布，`npm install -g dsh-g-memory` 可用）。**
